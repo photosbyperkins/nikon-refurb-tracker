@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Local tracker runtime data & logs
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.bat
+
+# Pytest / Ruff cache
+.pytest_cache/
+.ruff_cache/
+.coverage

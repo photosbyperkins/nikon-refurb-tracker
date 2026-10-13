@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NikonUSA Refurbished Tracker — Sub-50% MSRP & Restock Alerts</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="nikon-badge">N</div>
+      <div>
+        <h1>NikonUSA Refurbished Tracker</h1>
+        <p class="subtitle">True New-MSRP Resolver • Sub-50% MSRP &amp; Flash Sale Alert Engine</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div id="poller-status-pill" class="status-pill">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+      <button id="btn-check-now" class="btn btn-primary" title="Scan NikonUSA right now">
+        ⚡ Check Now
+      </button>
+      <button id="btn-pause-resume" class="btn btn-secondary">
+        ⏸ Pause
+      </button>
+      <button id="btn-test-alert" class="btn btn-secondary" title="Send a test alert to enabled channels">
+        🔔 Test Alert
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- KPI Summary Cards -->
+    <section class="kpi-grid">
+      <div class="kpi-card kpi-hot" id="kpi-sub50-card" title="Click to filter deals <= 50% of MSRP">
+        <div class="kpi-label">🔥 &ge;<span id="kpi-threshold-label">50</span>% Off MSRP Deals</div>
+        <div class="kpi-value" id="kpi-sub50-count">0</div>
+        <div class="kpi-sub">In-stock items at &le;50% of official New MSRP</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">📦 In-Stock Refurbished</div>
+        <div class="kpi-value"><span id="kpi-instock-count">0</span> <small id="kpi-total-skus">/ 0 SKUs</small></div>
+        <div class="kpi-sub">Live variants on nikonusa.com/refurbished-cameras</div>
+      </div>
+
+      <div class="kpi-card" id="kpi-extrasale-card" title="Click to filter items with extra refurb flash promo">
+        <div class="kpi-label">🏷️ Extra Refurb Flash Sale</div>
+        <div class="kpi-value" id="kpi-extrasale-count">0</div>
+        <div class="kpi-sub">Additional % discount below regular refurb price</div>
+      </div>
+
+      <div class="kpi-card" id="kpi-watchlist-card">
+        <div class="kpi-label">🎯 Custom Watchlist</div>
+        <div class="kpi-value" id="kpi-watchlist-count">0</div>
+        <div class="kpi-sub" id="kpi-last-poll">Last poll: Never</div>
+      </div>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="deals">📷 Live Refurbished Deals</button>
+      <button class="tab-btn" data-tab="watchlist">🎯 Watchlist &amp; Out-of-Stock Monitor</button>
+      <button class="tab-btn" data-tab="alerts">🔔 Alert Log</button>
+      <button class="tab-btn" data-tab="settings">⚙️ Alert &amp; Tracker Settings</button>
+    </nav>
+
+    <!-- TAB 1: Live Deals -->
+    <section id="tab-deals" class="tab-panel active">
+      <div class="filter-bar">
+        <input
+          type="search"
+          id="filter-search"
+          class="input search-input"
+          placeholder="Search model, lens, SKU (e.g. Z 6II, 24-70, 1659B, 2181B)..."
+        />
+
+        <select id="filter-category" class="select">
+          <option value="ALL">All Categories</option>
+        </select>
+
+        <select id="filter-sort" class="select">
+          <option value="discount_desc">Sort: Biggest % Off MSRP</option>
+          <option value="price_asc">Sort: Price (Low to High)</option>
+          <option value="price_desc">Sort: Price (High to Low)</option>
+          <option value="stock_desc">Sort: Warehouse Stock Qty</option>
+          <option value="name_asc">Sort: Name (A–Z)</option>
+        </select>
+
+        <label class="chip-toggle hot-chip">
+          <input type="checkbox" id="filter-sub50" />
+          <span>🔥 &le;50% of MSRP Only</span>
+        </label>
+
+        <label class="chip-toggle">
+          <input type="checkbox" id="filter-instock" checked />
+          <span>✅ In Stock Only</span>
+        </label>
+
+        <label class="chip-toggle">
+          <input type="checkbox" id="filter-extrasale" />
+          <span>🏷️ Extra Promo Active</span>
+        </label>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="deals-table">
+          <thead>
+            <tr>
+              <th>Product &amp; SKU</th>
+              <th>Stock Status</th>
+              <th>Refurb Sale Price</th>
+              <th>Official New MSRP</th>
+              <th>Savings vs MSRP</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="deals-tbody">
+            <tr>
+              <td colspan="6" class="empty-cell">Loading NikonUSA refurbished deals...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TAB 2: Watchlist -->
+    <section id="tab-watchlist" class="tab-panel">
+      <div class="panel-grid">
+        <div class="card">
+          <h3>Add Refurbished Product URL or SKU to Watchlist</h3>
+          <p class="muted">
+            Monitor specific refurbished cameras or lenses (even when out of stock and hidden from Nikon's main refurbished page) for instant restock or target price alerts.
+          </p>
+          <form id="watchlist-form" class="form-stack">
+            <div>
+              <label>NikonUSA Product URL or SKU</label>
+              <input
+                type="text"
+                id="wl-url-sku"
+                class="input"
+                placeholder="https://www.nikonusa.com/p/z-f-refurbished/1761Q/overview or 1761Q"
+                required
+              />
+            </div>
+            <div class="form-row">
+              <div>
+                <label>Custom Label (optional)</label>
+                <input type="text" id="wl-label" class="input" placeholder="Auto-detected from NikonUSA" />
+              </div>
+              <div>
+                <label>Max Target Price ($ USD, optional)</label>
+                <input type="number" step="0.01" id="wl-max-price" class="input" placeholder="e.g. 1199.95" />
+              </div>
+              <div>
+                <label>Min % Off MSRP Alert</label>
+                <input type="number" step="1" id="wl-min-discount" class="input" value="50" />
+              </div>
+            </div>
+            <div class="form-row checkbox-row">
+              <label class="checkbox-label">
+                <input type="checkbox" id="wl-restock" checked />
+                <span>Alert immediately on Restock (0 &rarr; In Stock)</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="wl-auto-open" />
+                <span>Auto-open NikonUSA product page in browser when triggered</span>
+              </label>
+            </div>
+            <button type="submit" class="btn btn-primary">➕ Add / Update Watchlist Rule</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h3>Quick-Add Popular High-Demand Nikon Z Gear</h3>
+          <p class="muted">One-click monitor frequently out-of-stock Nikon refurbished bodies &amp; S-Line lenses:</p>
+          <div id="presets-container" class="presets-grid"></div>
+        </div>
+      </div>
+
+      <div class="card mt-16">
+        <h3>Active Watchlist Rules</h3>
+        <div class="table-wrapper">
+          <table class="deals-table">
+            <thead>
+              <tr>
+                <th>Monitored Item</th>
+                <th>Live Status &amp; Stock</th>
+                <th>Live Refurb Price</th>
+                <th>True New MSRP</th>
+                <th>Alert Rules</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="watchlist-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: Alert Log -->
+    <section id="tab-alerts" class="tab-panel">
+      <div class="card">
+        <div class="card-header-row">
+          <h3>Triggered Alert History</h3>
+          <button id="btn-refresh-alerts" class="btn btn-secondary btn-sm">🔄 Refresh</button>
+        </div>
+        <div class="table-wrapper">
+          <table class="deals-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Event Type</th>
+                <th>Product &amp; SKU</th>
+                <th>Deal Price vs MSRP</th>
+                <th>Channels Dispatched</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody id="alerts-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: Settings -->
+    <section id="tab-settings" class="tab-panel">
+      <form id="settings-form" class="settings-grid">
+        <div class="card">
+          <h3>⚡ Polling &amp; Deal Threshold Rules</h3>
+          <div class="form-stack">
+            <div>
+              <label>Polling Interval (seconds, min 15s)</label>
+              <input type="number" id="set-poll-interval" class="input" min="15" max="3600" value="60" />
+              <small class="muted">Default 60s. Set to 20–30s during major Nikon refurbished flash sales.</small>
+            </div>
+            <div>
+              <label>Global Hot-Deal Threshold (% Off Official New MSRP)</label>
+              <input type="number" id="set-discount-threshold" class="input" min="5" max="90" step="1" value="50" />
+              <small class="muted">50% means alert whenever Refurb Sale Price &le; 50% of Brand-New MSRP.</small>
+            </div>
+            <div>
+              <label>Duplicate Alert Cooldown (minutes)</label>
+              <input type="number" id="set-cooldown" class="input" min="1" max="10080" value="360" />
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-extra-sale-alert" checked />
+              <span>Alert on any new refurb flash sale price drop (&ge;5% drop)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🖥️ Native Desktop Alerts (Windows &amp; macOS)</h3>
+          <div class="form-stack">
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-desktop-enabled" checked />
+              <span>Enable Desktop Toast / Notification Center Alerts</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-desktop-sound" checked />
+              <span>Play Audible Chime on Alert</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-auto-open-sub50" />
+              <span>Automatically launch NikonUSA product page in browser on &ge;50% Off MSRP deals</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>📱 Mobile Push via ntfy.sh (Recommended for Phone)</h3>
+          <p class="muted">Install the free <strong>ntfy</strong> app on iOS/Android and subscribe to your private topic name.</p>
+          <div class="form-stack">
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-ntfy-enabled" />
+              <span>Enable ntfy.sh Push Notifications</span>
+            </label>
+            <div>
+              <label>ntfy Server URL</label>
+              <input type="url" id="set-ntfy-server" class="input" value="https://ntfy.sh" />
+            </div>
+            <div>
+              <label>ntfy Topic Name (keep unique/secret)</label>
+              <input type="text" id="set-ntfy-topic" class="input" placeholder="e.g. nikon-refurb-alerts-myname" />
+            </div>
+            <div>
+              <label>ntfy Access Token (optional)</label>
+              <input type="password" id="set-ntfy-token" class="input" placeholder="Bearer token if using protected topic" />
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>💬 Discord / Telegram / Pushover Webhooks</h3>
+          <div class="form-stack">
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-discord-enabled" />
+              <span>Enable Discord Rich Webhook Alerts</span>
+            </label>
+            <div>
+              <label>Discord Webhook URL</label>
+              <input type="url" id="set-discord-url" class="input" placeholder="https://discord.com/api/webhooks/..." />
+            </div>
+            <hr class="divider" />
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-telegram-enabled" />
+              <span>Enable Telegram Bot Alerts</span>
+            </label>
+            <div class="form-row">
+              <div>
+                <label>Telegram Bot Token</label>
+                <input type="password" id="set-telegram-token" class="input" placeholder="123456:ABC-DEF..." />
+              </div>
+              <div>
+                <label>Telegram Chat ID</label>
+                <input type="text" id="set-telegram-chat" class="input" placeholder="e.g. 987654321" />
+              </div>
+            </div>
+            <hr class="divider" />
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-pushover-enabled" />
+              <span>Enable Pushover Mobile Alerts</span>
+            </label>
+            <div class="form-row">
+              <div>
+                <label>Pushover User Key</label>
+                <input type="text" id="set-pushover-user" class="input" />
+              </div>
+              <div>
+                <label>Pushover API Token</label>
+                <input type="password" id="set-pushover-token" class="input" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-footer">
+          <button type="submit" class="btn btn-primary">💾 Save All Settings</button>
+          <span id="settings-save-msg" class="save-msg"></span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <!-- Price & Stock History Modal -->
+  <div id="history-modal" class="modal hidden">
+    <div class="modal-backdrop" id="modal-close-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-title">Price &amp; Stock History</h3>
+        <button id="btn-close-modal" class="btn-icon">&times;</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Toast Banner -->
+  <div id="ui-toast" class="ui-toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

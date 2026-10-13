@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nikon-refurb-tracker"
+version = "0.1.0"
+description = "Fast cross-platform NikonUSA.com refurbished camera & lens deal tracker with True New-MSRP resolution and instant sub-50% MSRP alerts."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "NikonUSA Refurbished Tracker Contributors" }
+]
+keywords = ["nikon", "nikonusa", "refurbished", "camera", "lens", "price-tracker", "alerts"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: MacOS X",
+    "Framework :: FastAPI",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "pydantic>=2.6.0",
+    "pystray>=0.19.5",
+    "Pillow>=10.2.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "respx>=0.21.0",
+    "ruff>=0.3.0",
+    "pyinstaller>=6.5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/photosbyperkins/nikon-refurb-tracker"
+Repository = "https://github.com/photosbyperkins/nikon-refurb-tracker.git"
+Issues = "https://github.com/photosbyperkins/nikon-refurb-tracker/issues"
+
+[project.scripts]
+nikon-tracker = "nikon_tracker.cli:main"
+nikon-tracker-gui = "nikon_tracker.tray:run_tray_app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nikon_tracker = ["web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
