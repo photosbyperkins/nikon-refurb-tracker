@@ -21,7 +21,8 @@ When NikonUSA runs a flash refurbished sale (e.g., *"10% Off Select Refurbished 
 
 - 🔥 **Sub-50% of MSRP Deal Detection**: Automatically highlights and alerts when any refurbished camera, kit, or lens drops to $\le 50\%$ of its true brand-new MSRP (configurable threshold).
 - 📦 **Exact Warehouse Stock Counts**: Displays NikonUSA's live `availableQuantity` for every SKU.
-- 🎯 **Custom Watchlist & 1-Click Presets**: Watch any NikonUSA refurbished URL or SKU with custom max price ($), min `% off MSRP`, and instant restock (`0 -> N`) triggers.
+- 🔍 **266-SKU Out-of-Stock & Hidden Refurbished Catalog Browser**: Includes 266 curated Nikon refurbished cameras, Z-mount & F-mount lenses, teleconverters, FTZ adapters, flashes, and sport optics discovered via NikonUSA sitemap probing—even when they are out of stock and hidden from Nikon's main `/refurbished-cameras` page.
+- 🎯 **Custom Watchlist & 1-Click Monitoring**: Watch any NikonUSA refurbished URL or pick from the 266-SKU catalog with custom max price ($), min `% off MSRP`, and instant restock (`0 -> N`) triggers.
 - 🔔 **Fast Multi-Channel Alerts**:
   - **Windows & macOS Native Desktop Notifications** + audible chime + optional auto-open product page in browser.
   - **Mobile Push via [ntfy.sh](https://ntfy.sh)** (free instant push notifications to iOS/Android with one-tap link to NikonUSA).
@@ -43,7 +44,7 @@ cd nikon-refurb-tracker
 pip install -e ".[dev]"
 ```
 
-### 2. Run a Fast Terminal Scan (`nikon-tracker check`)
+### 2. Run a Fast Terminal Scan or Browse the 266-SKU Catalog
 
 ```bash
 # Scan all in-stock NikonUSA refurbished items and resolve true New MSRPs:
@@ -51,6 +52,13 @@ nikon-tracker check
 
 # Show only hot deals priced at <= 50% of official New MSRP:
 nikon-tracker check --sub50
+
+# Browse or search the full 266-item out-of-stock & refurbished catalog:
+nikon-tracker catalog --search "Z 8"
+nikon-tracker catalog --category "NIKKOR Z"
+
+# Add any SKU or URL to your restock & sub-50% MSRP watchlist:
+nikon-tracker watch 1695Q
 ```
 
 ### 3. Launch the System Tray App & Local Web Dashboard
@@ -73,12 +81,12 @@ You can package the tracker into a single standalone executable using PyInstalle
 
 **Windows (PowerShell):**
 ```powershell
-pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker" --add-data "src/nikon_tracker/web/static;nikon_tracker/web/static" src/nikon_tracker/tray.py
+pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker" --add-data "src/nikon_tracker/web/static;nikon_tracker/web/static" --add-data "src/nikon_tracker/data;nikon_tracker/data" src/nikon_tracker/tray.py
 ```
 
 **macOS (Terminal):**
 ```bash
-pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker" --add-data "src/nikon_tracker/web/static:nikon_tracker/web/static" src/nikon_tracker/tray.py
+pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker" --add-data "src/nikon_tracker/web/static:nikon_tracker/web/static" --add-data "src/nikon_tracker/data:nikon_tracker/data" src/nikon_tracker/tray.py
 ```
 
 ---
