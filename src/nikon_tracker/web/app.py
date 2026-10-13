@@ -14,14 +14,16 @@ from pydantic import BaseModel
 
 from nikon_tracker.database import TrackerDatabase
 from nikon_tracker.models import (
+    CATALOG_CATEGORIES,
     POPULAR_NIKON_PRESETS,
     AlertEvent,
     TrackerSettings,
     VariantSnapshot,
     WatchlistEntry,
+    load_refurbished_catalog,
 )
 from nikon_tracker.scheduler import TrackerScheduler
-from nikon_tracker.scraper import parse_nikon_url
+from nikon_tracker.scraper import NIKON_BASE_URL, parse_nikon_url
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -168,9 +170,29 @@ def create_app(
             snap = variants_by_sku.get(entry.sku.upper())
             d["live_variant"] = snap.model_dump() if snap else None
             enriched.append(d)
+
+        full_catalog = load_refurbished_catalog()
+        enriched_catalog = []
+        for item in full_catalog:
+            c_copy = dict(item)
+            sku_key = str(c_copy.get("sku", "")).upper()
+            live = variants_by_sku.get(sku_key)
+            if live:
+                c_copy["refurb_dollars"] = live.effective_price_dollars
+                c_copy["msrp_dollars"] = live.msrp_dollars or c_copy.get("msrp_dollars")
+                c_copy["discount_pct_vs_msrp"] = (
+                    live.discount_pct_vs_msrp
+                    if live.discount_pct_vs_msrp is not None
+                    else c_copy.get("discount_pct_vs_msrp")
+                )
+                c_copy["is_on_stock"] = live.is_on_stock
+                c_copy["qty"] = live.available_quantity
+            enriched_catalog.append(c_copy)
+
         return {
             "items": enriched,
-            "presets": POPULAR_NIKON_PRESETS,
+            "presets": enriched_catalog,
+            "preset_categories": CATALOG_CATEGORIES,
         }
 
     @app.post("/api/watchlist")
@@ -189,6 +211,8 @@ def create_app(
             elif not sku:
                 sku = req.url_or_sku.strip().upper()
 
+        all_presets = load_refurbished_catalog() + list(POPULAR_NIKON_PRESETS)
+
         # Check if SKU matches one of the presets or already exists in DB
         if sku and (not slug or not product_key):
             existing_var = tracker_db.get_variant(sku)
@@ -198,7 +222,7 @@ def create_app(
                 label = label or existing_var.name
             else:
                 preset = next(
-                    (p for p in POPULAR_NIKON_PRESETS if str(p["sku"]).upper() == sku),
+                    (p for p in all_presets if str(p["sku"]).upper() == sku),
                     None,
                 )
                 if preset:
@@ -209,7 +233,7 @@ def create_app(
         if not sku or not slug or not product_key:
             raise HTTPException(
                 status_code=400,
-                detail="Please provide a valid NikonUSA product URL (e.g. https://www.nikonusa.com/p/z-f-refurbished/1761Q/overview) or select a preset SKU.",
+                detail="Please provide a valid NikonUSA product URL (e.g. https://www.nikonusa.com/p/z-f-refurbished/1761Q/overview) or select a catalog SKU.",
             )
 
         # Immediately probe NikonUSA for this product page if not yet in DB
@@ -254,6 +278,59 @@ def create_app(
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Watchlist SKU {sku} not found")
         return {"deleted": True, "sku": sku.upper()}
+
+    @app.post("/api/seed-catalog")
+    async def seed_full_catalog() -> dict[str, Any]:
+        """Seed all 266 curated refurbished & out-of-stock items into the local Deals database."""
+        catalog = load_refurbished_catalog()
+        existing_skus = {v.sku.upper() for v in tracker_db.get_all_variants()}
+        added = 0
+        for item in catalog:
+            sku = str(item.get("sku", "")).strip().upper()
+            if not sku or sku in existing_skus:
+                continue
+            refurb_dollars = float(item.get("refurb_dollars") or 0.0)
+            if refurb_dollars <= 0:
+                continue
+            msrp_dollars = item.get("msrp_dollars")
+            msrp_cents = int(round(float(msrp_dollars) * 100)) if msrp_dollars else None
+            refurb_cents = int(round(refurb_dollars * 100))
+            slug = str(item.get("slug") or "")
+            product_key = str(item.get("product_key") or sku)
+            snap = VariantSnapshot(
+                sku=sku,
+                product_key=product_key,
+                name=str(item.get("label") or sku),
+                slug=slug,
+                category=str(item.get("category") or "Refurbished Gear"),
+                product_url=f"{NIKON_BASE_URL}/p/{slug}/{product_key}/overview",
+                refurb_reg_cents=refurb_cents,
+                refurb_sale_cents=refurb_cents,
+                new_retail_cents=msrp_cents,
+                true_msrp_cents=msrp_cents,
+                msrp_source="new_catalog" if msrp_cents else "unknown",
+                is_on_stock=bool(item.get("is_on_stock")),
+                available_quantity=int(item.get("qty") or 0),
+                add_to_cart_status="ADD_TO_CART" if item.get("is_on_stock") else "OUT_OF_STOCK",
+            )
+            tracker_db.upsert_variant(snap)
+            added += 1
+        return {
+            "seeded_count": added,
+            "total_catalog_count": len(catalog),
+            "status": tracker_scheduler.get_status(),
+        }
+
+    @app.post("/api/discover-oos")
+    async def discover_oos_live() -> dict[str, Any]:
+        """Live-probe NikonUSA's sitemap for all refurbished & out-of-stock pages."""
+        snapshots = await tracker_scheduler.scraper.discover_all_refurbished_from_sitemap()
+        for snap in snapshots:
+            tracker_db.upsert_variant(snap)
+        return {
+            "discovered_count": len(snapshots),
+            "status": tracker_scheduler.get_status(),
+        }
 
     @app.get("/api/alerts")
     async def get_alerts(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:

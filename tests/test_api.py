@@ -93,3 +93,17 @@ def test_api_endpoints(tmp_path: Path) -> None:
     )
     assert set_res.status_code == 200
     assert set_res.json()["poll_interval_seconds"] == 30
+
+    # 6. Full 266-item out-of-stock & refurbished catalog presets + seeding
+    wl_res = client.get("/api/watchlist")
+    assert wl_res.status_code == 200
+    wl_data = wl_res.json()
+    assert len(wl_data["presets"]) >= 250
+    assert "Mirrorless Cameras (Z Series)" in wl_data["preset_categories"]
+
+    seed_res = client.post("/api/seed-catalog")
+    assert seed_res.status_code == 200
+    seed_data = seed_res.json()
+    assert seed_data["total_catalog_count"] >= 250
+    assert seed_data["seeded_count"] >= 240
+

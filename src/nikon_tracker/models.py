@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -331,3 +333,34 @@ POPULAR_NIKON_PRESETS: list[dict[str, object]] = [
         "msrp_dollars": 1899.95,
     },
 ]
+
+CATALOG_CATEGORIES: list[str] = [
+    "Mirrorless Cameras (Z Series)",
+    "NIKKOR Z Lenses & Teleconverters",
+    "Cinema Cameras (Z Cinema)",
+    "Adapters & Accessories (FTZ)",
+    "DSLR Cameras",
+    "F-Mount DSLR Lenses (AF-S / AF-P / PC)",
+    "Flashes & Speedlights",
+    "Compact & Superzoom Cameras (COOLPIX)",
+    "Sport Optics (Binoculars, Rangefinders, Fieldscopes)",
+    "Legacy AF / Manual F-Mount Lenses",
+]
+
+_CACHED_CATALOG: list[dict[str, Any]] | None = None
+
+
+def load_refurbished_catalog() -> list[dict[str, Any]]:
+    """Load the full 266-item NikonUSA refurbished catalog (out-of-stock & in-stock)."""
+    global _CACHED_CATALOG
+    if _CACHED_CATALOG is not None:
+        return _CACHED_CATALOG
+    catalog_path = Path(__file__).parent / "data" / "refurbished_catalog.json"
+    if catalog_path.exists():
+        try:
+            _CACHED_CATALOG = json.loads(catalog_path.read_text(encoding="utf-8"))
+            return _CACHED_CATALOG
+        except Exception:
+            pass
+    return list(POPULAR_NIKON_PRESETS)
+

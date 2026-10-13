@@ -63,7 +63,7 @@ nikon-tracker-gui = "nikon_tracker.tray:run_tray_app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-nikon_tracker = ["web/static/*"]
+nikon_tracker = ["web/static/*", "data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

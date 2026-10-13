@@ -478,13 +478,26 @@ class NikonUSAClient:
             variant_label = ""
             if multi_variant:
                 kit_items = attrs.get("kitItems")
+                bundle_list = attrs.get("bundleWithList")
                 color = attrs.get("color")
                 if isinstance(kit_items, list) and kit_items:
                     variant_label = f"Kit ({', '.join(str(k) for k in kit_items)})"
+                elif isinstance(bundle_list, list) and bundle_list:
+                    lens_names = [
+                        str(b.get("name") or b.get("label") or "")
+                        for b in bundle_list
+                        if isinstance(b, dict) and (b.get("name") or b.get("label"))
+                    ]
+                    if lens_names:
+                        variant_label = f"{' + '.join(lens_names)} Kit"
                 elif attrs.get("bodyOnly") is True:
                     variant_label = "Body Only"
                 elif isinstance(color, dict) and color.get("label"):
                     variant_label = str(color["label"])
+                elif isinstance(color, list) and color and isinstance(color[0], dict):
+                    variant_label = str(color[0].get("label") or f"Option {sku}")
+                elif sku == product_key and "cameras" in product_type_key:
+                    variant_label = "Body Only"
                 else:
                     variant_label = f"Option {sku}"
 
@@ -523,3 +536,52 @@ class NikonUSAClient:
             results.append(snap)
 
         return results
+
+    async def discover_all_refurbished_from_sitemap(self) -> list[VariantSnapshot]:
+        """Probe NikonUSA's /google/sitemap.xml to discover all refurbished product pages (including out-of-stock)."""
+        own_client = self._external_client is None
+        client = await self._get_client()
+        try:
+            await self.ensure_build_id(client)
+            resp = await client.get(f"{NIKON_BASE_URL}/google/sitemap.xml")
+            resp.raise_for_status()
+
+            locs = re.findall(r"<loc>(https://www\.nikonusa\.com/p/[^<]+)</loc>", resp.text)
+            base_candidates: dict[tuple[str, str], None] = {}
+            for loc in locs:
+                parsed = parse_nikon_url(loc)
+                if not parsed:
+                    continue
+                slug, key = parsed
+                base_slug = strip_refurb_slug(slug)
+                base_key = strip_refurb_sku(key)
+                base_candidates[(base_slug, base_key)] = None
+
+            snapshots: list[VariantSnapshot] = []
+            seen_skus: set[str] = set()
+
+            async def _probe_base(bslug: str, bkey: str) -> list[VariantSnapshot]:
+                ref_slug = f"{bslug}-refurbished"
+                for suffix in ("Q", "B"):
+                    ref_key = f"{bkey}{suffix}"
+                    snaps = await self._fetch_single_product_page(client, ref_slug, ref_key)
+                    if snaps:
+                        return snaps
+                return []
+
+            results = await asyncio.gather(
+                *(_probe_base(bs, bk) for (bs, bk) in base_candidates)
+            )
+            for group in results:
+                for snap in group:
+                    if snap.sku not in seen_skus:
+                        seen_skus.add(snap.sku)
+                        snapshots.append(snap)
+
+            if snapshots:
+                await self._resolve_msrps_batch(client, snapshots)
+            return snapshots
+        finally:
+            if own_client:
+                await client.aclose()
+

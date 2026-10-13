@@ -15,7 +15,7 @@ dist/
 *.spec
 
 # Local tracker runtime data & logs
-data/
+/data/
 *.db
 *.db-journal
 *.db-wal

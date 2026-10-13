@@ -251,29 +251,31 @@ async function promptManualMsrp(sku, currentMsrp) {
   loadStatus();
 }
 
-// --- Watchlist ---
+// --- Watchlist & 266-Item Catalog Browser ---
 async function loadWatchlist() {
   const res = await fetch("/api/watchlist");
   watchlistData = await res.json();
   document.getElementById("kpi-watchlist-count").textContent = (watchlistData.items || []).length;
 
-  // Render presets
-  const presetsEl = document.getElementById("presets-container");
-  presetsEl.innerHTML = (watchlistData.presets || [])
-    .map(
-      (p) => `
-      <button type="button" class="preset-btn" onclick="addPresetToWatchlist('${p.sku}', '${p.slug}', '${p.product_key}', '${escapeHtml(p.label)}')">
-        ➕ <strong>${escapeHtml(p.label)}</strong> <span class="muted">[${p.sku}]</span>
-      </button>
-    `
-    )
-    .join("");
+  // Populate catalog category dropdown once
+  const catSel = document.getElementById("catalog-category");
+  if (catSel && catSel.options.length <= 1 && Array.isArray(watchlistData.preset_categories)) {
+    watchlistData.preset_categories.forEach((cat) => {
+      const count = (watchlistData.presets || []).filter((p) => p.category === cat).length;
+      const opt = document.createElement("option");
+      opt.value = cat;
+      opt.textContent = `${cat} (${count})`;
+      catSel.appendChild(opt);
+    });
+  }
 
-  // Render watchlist table
+  renderCatalogPicker();
+
+  // Render active watchlist table
   const tbody = document.getElementById("watchlist-tbody");
   const items = watchlistData.items || [];
   if (!items.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Your watchlist is empty. Add a NikonUSA product URL or click a preset above!</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Your watchlist is empty. Click <strong>🎯 + Watch</strong> on any of the 266 items below or paste a URL on the right!</td></tr>`;
     return;
   }
 
@@ -319,6 +321,125 @@ async function loadWatchlist() {
     })
     .join("");
 }
+
+function renderCatalogPicker() {
+  const presetsEl = document.getElementById("presets-container");
+  if (!presetsEl) return;
+
+  const q = (document.getElementById("catalog-search")?.value || "").trim().toLowerCase();
+  const cat = document.getElementById("catalog-category")?.value || "ALL";
+  const stockFilter = document.getElementById("catalog-stock-filter")?.value || "ALL";
+
+  const watchedSkus = new Set((watchlistData.items || []).map((i) => String(i.sku).toUpperCase()));
+  const allPresets = watchlistData.presets || [];
+
+  const filtered = allPresets.filter((p) => {
+    if (cat !== "ALL" && p.category !== cat) return false;
+    if (stockFilter === "OOS" && p.is_on_stock) return false;
+    if (stockFilter === "INSTOCK" && !p.is_on_stock) return false;
+    if (stockFilter === "SUB50" && (!p.discount_pct_vs_msrp || p.discount_pct_vs_msrp < 50.0)) return false;
+    if (q) {
+      const hay = `${p.label} ${p.sku} ${p.slug} ${p.category || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const badgeEl = document.getElementById("catalog-count-badge");
+  if (badgeEl) badgeEl.textContent = `${filtered.length} / ${allPresets.length}`;
+
+  if (!filtered.length) {
+    presetsEl.innerHTML = `<tr><td colspan="6" class="empty-cell">No catalog items match your search.</td></tr>`;
+    return;
+  }
+
+  presetsEl.innerHTML = filtered
+    .map((p) => {
+      const skuUpper = String(p.sku).toUpperCase();
+      const isWatched = watchedSkus.has(skuUpper);
+      const prodUrl = `https://www.nikonusa.com/p/${p.slug}/${p.product_key}/overview`;
+
+      const stockHtml = p.is_on_stock
+        ? `<span class="badge badge-instock">✅ In Stock (${p.qty || "Yes"})</span>`
+        : `<span class="badge badge-oos">Out of Stock</span>`;
+
+      const priceHtml = p.refurb_dollars ? `<strong>${fmtCurrency(p.refurb_dollars)}</strong>` : "—";
+
+      let msrpHtml = `<span class="muted">—</span>`;
+      if (p.msrp_dollars) {
+        const isSub50 = p.discount_pct_vs_msrp && p.discount_pct_vs_msrp >= 50.0;
+        const discBadge = p.discount_pct_vs_msrp
+          ? `<span class="badge ${isSub50 ? "badge-sub50" : "badge-discount"}">${isSub50 ? "🔥 " : ""}${p.discount_pct_vs_msrp}% off</span>`
+          : "";
+        msrpHtml = `${fmtCurrency(p.msrp_dollars)} ${discBadge}`;
+      }
+
+      const safeLabel = escapeHtml(p.label).replace(/'/g, "\\'");
+      const actionBtn = isWatched
+        ? `<span class="badge badge-instock">✅ Watching</span>`
+        : `<button type="button" class="btn btn-primary btn-sm" onclick="addPresetToWatchlist('${escapeHtml(p.sku)}', '${escapeHtml(p.slug)}', '${escapeHtml(p.product_key)}', '${safeLabel}')">🎯 + Watch</button>`;
+
+      return `
+        <tr>
+          <td>
+            <a href="${escapeHtml(prodUrl)}" target="_blank" rel="noopener" class="product-title">${escapeHtml(p.label)}</a>
+            <div class="product-meta">SKU: <strong>${escapeHtml(p.sku)}</strong> • <code>/p/${escapeHtml(p.slug)}/${escapeHtml(p.product_key)}</code></div>
+          </td>
+          <td><span class="product-meta">${escapeHtml(p.category || "Refurbished")}</span></td>
+          <td>${stockHtml}</td>
+          <td>${priceHtml}</td>
+          <td>${msrpHtml}</td>
+          <td>${actionBtn}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+["catalog-search", "catalog-category", "catalog-stock-filter"].forEach((id) => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener(id === "catalog-search" ? "input" : "change", renderCatalogPicker);
+  }
+});
+
+async function seedFullCatalogToDeals() {
+  showToast("Loading all 266 Nikon refurbished & out-of-stock SKUs into Deals table...");
+  const res = await fetch("/api/seed-catalog", { method: "POST" });
+  const data = await res.json();
+  // Uncheck "In Stock Only" so the user immediately sees all 266 OOS & In-Stock items
+  const inStockCb = document.getElementById("filter-instock");
+  if (inStockCb) inStockCb.checked = false;
+  showToast(`Loaded ${data.total_catalog_count} total SKUs (${data.seeded_count} newly added)! Showing all OOS & In-Stock items.`);
+  await loadStatus();
+  await loadDeals();
+  await loadWatchlist();
+}
+
+document.getElementById("btn-seed-catalog")?.addEventListener("click", seedFullCatalogToDeals);
+document.getElementById("btn-seed-deals")?.addEventListener("click", seedFullCatalogToDeals);
+
+document.getElementById("btn-discover-oos")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-discover-oos");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "⏳ Probing Nikon Sitemap...";
+  }
+  showToast("Probing NikonUSA sitemap for all hidden & out-of-stock refurbished pages (takes ~10-15s)...");
+  try {
+    const res = await fetch("/api/discover-oos", { method: "POST" });
+    const data = await res.json();
+    showToast(`Live sitemap probe complete! Synced ${data.discovered_count} refurbished SKUs.`);
+    await loadStatus();
+    await loadDeals();
+    await loadWatchlist();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "🛰️ Live-Probe Nikon Sitemap";
+    }
+  }
+});
 
 async function addPresetToWatchlist(sku, slug, productKey, label) {
   showToast(`Adding ${label} (${sku}) and probing NikonUSA...`);

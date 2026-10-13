@@ -105,6 +105,10 @@
           <input type="checkbox" id="filter-extrasale" />
           <span>🏷️ Extra Promo Active</span>
         </label>
+
+        <button type="button" id="btn-seed-deals" class="btn btn-secondary btn-sm" title="Load all 266 hidden & out-of-stock Nikon refurbished SKUs into this table">
+          📥 Load All 266 OOS &amp; Refurb SKUs
+        </button>
       </div>
 
       <div class="table-wrapper">
@@ -128,13 +132,35 @@
       </div>
     </section>
 
-    <!-- TAB 2: Watchlist -->
+    <!-- TAB 2: Watchlist & Out-of-Stock Catalog -->
     <section id="tab-watchlist" class="tab-panel">
       <div class="panel-grid">
         <div class="card">
-          <h3>Add Refurbished Product URL or SKU to Watchlist</h3>
+          <h3>Active Watchlist Rules</h3>
           <p class="muted">
-            Monitor specific refurbished cameras or lenses (even when out of stock and hidden from Nikon's main refurbished page) for instant restock or target price alerts.
+            Watchlisted items are polled directly on every cycle (even when out of stock and hidden from Nikon's main refurbished page) for instant restock or target price alerts.
+          </p>
+          <div class="table-wrapper">
+            <table class="deals-table">
+              <thead>
+                <tr>
+                  <th>Monitored Item</th>
+                  <th>Live Status &amp; Stock</th>
+                  <th>Live Refurb Price</th>
+                  <th>True New MSRP</th>
+                  <th>Alert Rules</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="watchlist-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Add Custom NikonUSA URL or SKU Rule</h3>
+          <p class="muted">
+            Paste any NikonUSA refurbished URL or SKU and customize target price / % off MSRP thresholds:
           </p>
           <form id="watchlist-form" class="form-stack">
             <div>
@@ -143,7 +169,7 @@
                 type="text"
                 id="wl-url-sku"
                 class="input"
-                placeholder="https://www.nikonusa.com/p/z-f-refurbished/1761Q/overview or 1761Q"
+                placeholder="https://www.nikonusa.com/p/z-8-refurbished/1695Q/overview or 1695Q"
                 required
               />
             </div>
@@ -154,7 +180,7 @@
               </div>
               <div>
                 <label>Max Target Price ($ USD, optional)</label>
-                <input type="number" step="0.01" id="wl-max-price" class="input" placeholder="e.g. 1199.95" />
+                <input type="number" step="0.01" id="wl-max-price" class="input" placeholder="e.g. 1999.95" />
               </div>
               <div>
                 <label>Min % Off MSRP Alert</label>
@@ -174,29 +200,60 @@
             <button type="submit" class="btn btn-primary">➕ Add / Update Watchlist Rule</button>
           </form>
         </div>
-
-        <div class="card">
-          <h3>Quick-Add Popular High-Demand Nikon Z Gear</h3>
-          <p class="muted">One-click monitor frequently out-of-stock Nikon refurbished bodies &amp; S-Line lenses:</p>
-          <div id="presets-container" class="presets-grid"></div>
-        </div>
       </div>
 
+      <!-- Full 266-Item Out-of-Stock & Refurbished Catalog Browser -->
       <div class="card mt-16">
-        <h3>Active Watchlist Rules</h3>
-        <div class="table-wrapper">
+        <div class="card-header-row" style="flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+          <div>
+            <h3>🔍 Browse Full NikonUSA Refurbished &amp; Out-of-Stock Catalog (<span id="catalog-count-badge">266</span> SKUs)</h3>
+            <p class="muted" style="margin-bottom:0;">
+              Discovered via NikonUSA sitemap probing — includes hidden out-of-stock Z8, Z9, Z6III, Zf, Z5II, Plena, 180-600mm, S-Line lenses, FTZ II, and DSLRs. Click <strong>🎯 + Watch</strong> on any item to monitor it!
+            </p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" id="btn-seed-catalog" class="btn btn-secondary btn-sm" title="Add all 266 catalog items into the Live Deals database">
+              📥 Load All 266 into Deals Table
+            </button>
+            <button type="button" id="btn-discover-oos" class="btn btn-secondary btn-sm" title="Live-probe NikonUSA's sitemap for any brand-new refurbished pages">
+              🛰️ Live-Probe Nikon Sitemap
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-bar" style="margin-top:8px;">
+          <input
+            type="search"
+            id="catalog-search"
+            class="input search-input"
+            placeholder="Search 266 items: Z 8, Z 9, Z6III, Z f, Plena, 180-600, 24-70, 70-200, FTZ II, D850, 1695Q..."
+          />
+
+          <select id="catalog-category" class="select">
+            <option value="ALL">All 10 Categories (266 SKUs)</option>
+          </select>
+
+          <select id="catalog-stock-filter" class="select">
+            <option value="ALL">All Stock States</option>
+            <option value="OOS">Out-of-Stock Only (Hidden Pages)</option>
+            <option value="INSTOCK">Currently In Stock</option>
+            <option value="SUB50">🔥 &ge;50% Off MSRP When In Stock</option>
+          </select>
+        </div>
+
+        <div class="table-wrapper" style="max-height: 540px; overflow-y: auto;">
           <table class="deals-table">
             <thead>
               <tr>
-                <th>Monitored Item</th>
-                <th>Live Status &amp; Stock</th>
-                <th>Live Refurb Price</th>
-                <th>True New MSRP</th>
-                <th>Alert Rules</th>
-                <th>Actions</th>
+                <th>Refurbished Item &amp; Hidden URL</th>
+                <th>Category</th>
+                <th>Stock Status</th>
+                <th>Refurbished Price</th>
+                <th>Official New MSRP &amp; Savings</th>
+                <th>Watchlist Action</th>
               </tr>
             </thead>
-            <tbody id="watchlist-tbody"></tbody>
+            <tbody id="presets-container"></tbody>
           </table>
         </div>
       </div>
