@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import subprocess
 import sys
@@ -65,6 +66,7 @@ def evaluate_variant_alerts(
             )
 
     # 2. Watchlist Target Price or Target % Off MSRP check
+    watchlist_price_triggered = False
     if watch and watch.enabled:
         hit_price = (
             watch.max_price_dollars is not None
@@ -76,6 +78,7 @@ def evaluate_variant_alerts(
             and current.discount_pct_vs_msrp >= watch.min_discount_pct_msrp
         )
         if hit_price or hit_pct:
+            watchlist_price_triggered = True
             reason = (
                 f"<= target ${watch.max_price_dollars:,.2f}"
                 if hit_price and watch.max_price_dollars is not None
@@ -105,7 +108,8 @@ def evaluate_variant_alerts(
     # 3. Global Sub-50% of MSRP (or custom global_discount_threshold_pct) Hot Deal check
     threshold = settings.global_discount_threshold_pct
     if (
-        current.discount_pct_vs_msrp is not None
+        not watchlist_price_triggered
+        and current.discount_pct_vs_msrp is not None
         and current.discount_pct_vs_msrp >= threshold
     ):
         events.append(
@@ -300,8 +304,8 @@ class AlertDispatcher:
                 creationflags=creationflags,
             )
         elif sys.platform == "darwin":
-            safe_title = title.replace('"', '\\"')
-            safe_msg = message.replace('"', '\\"')
+            safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+            safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
             sound_clause = ' sound name "Glass"' if play_sound else ""
             script = f'display notification "{safe_msg}" with title "{safe_title}"{sound_clause}'
             subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
@@ -391,10 +395,13 @@ class AlertDispatcher:
         self, alert: AlertEvent, settings: TrackerSettings
     ) -> str | None:
         api_url = f"https://api.telegram.org/bot{settings.telegram_bot_token.strip()}/sendMessage"
+        safe_title = html.escape(alert.title)
+        safe_msg = html.escape(alert.message)
+        safe_url = html.escape(alert.product_url, quote=True)
         text = (
-            f"<b>{alert.title}</b>\n\n"
-            f"{alert.message}\n\n"
-            f"🔗 <a href=\"{alert.product_url}\">View on NikonUSA.com</a>"
+            f"<b>{safe_title}</b>\n\n"
+            f"{safe_msg}\n\n"
+            f"🔗 <a href=\"{safe_url}\">View on NikonUSA.com</a>"
         )
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -21,11 +20,12 @@ from nikon_tracker.models import (
     VariantSnapshot,
     WatchlistEntry,
     load_refurbished_catalog,
+    resolve_package_path,
 )
 from nikon_tracker.scheduler import TrackerScheduler
 from nikon_tracker.scraper import NIKON_BASE_URL, parse_nikon_url
 
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = resolve_package_path("web/static")
 
 
 class ManualMsrpRequest(BaseModel):
@@ -309,9 +309,9 @@ def create_app(
                 new_retail_cents=msrp_cents,
                 true_msrp_cents=msrp_cents,
                 msrp_source="new_catalog" if msrp_cents else "unknown",
-                is_on_stock=bool(item.get("is_on_stock")),
-                available_quantity=int(item.get("qty") or 0),
-                add_to_cart_status="ADD_TO_CART" if item.get("is_on_stock") else "OUT_OF_STOCK",
+                is_on_stock=False,
+                available_quantity=0,
+                add_to_cart_status="OUT_OF_STOCK",
             )
             tracker_db.upsert_variant(snap)
             added += 1

@@ -108,7 +108,9 @@ class TrackerScheduler:
                         watchlist_by_sku=watchlist_by_sku,
                         db=self.db,
                     )
-                    for ev in events:
+                    for idx, ev in enumerate(events):
+                        if idx > 0:
+                            ev.auto_open_browser = False
                         sent_ev = await self.dispatcher.dispatch(ev, settings)
                         triggered_alerts.append(sent_ev)
 

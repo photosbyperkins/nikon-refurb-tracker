@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 import time
 import urllib.request
@@ -55,11 +57,19 @@ def run_tray_app(
     open_browser: bool = True,
 ) -> None:
     """Launch the FastAPI dashboard + background poller and attach a Windows/macOS system tray icon."""
+    # Prevent Uvicorn logging crash in PyInstaller --windowed mode where stdout/stderr are None
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
     db = TrackerDatabase()
     scheduler = TrackerScheduler(db=db)
     app = create_app(db=db, scheduler=scheduler, start_background_poller=True)
 
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    config = uvicorn.Config(
+        app, host=host, port=port, log_level="warning", log_config=None
+    )
     server = uvicorn.Server(config)
 
     server_thread = threading.Thread(target=server.run, daemon=True)
@@ -81,30 +91,28 @@ def run_tray_app(
         server_thread.join()
         return
 
+    def _post_bg(path: str, timeout: float = 10.0) -> None:
+        def _worker() -> None:
+            try:
+                req = urllib.request.Request(f"{dashboard_url}{path}", method="POST")
+                urllib.request.urlopen(req, timeout=timeout)
+            except Exception as exc:
+                logger.debug("Tray background request %s failed: %s", path, exc)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def on_open_dashboard(_icon: Any, _item: Any) -> None:
         webbrowser.open(dashboard_url)
 
     def on_check_now(_icon: Any, _item: Any) -> None:
-        try:
-            req = urllib.request.Request(f"{dashboard_url}/api/check-now", method="POST")
-            urllib.request.urlopen(req, timeout=30)
-        except Exception as exc:
-            logger.warning("Manual check from tray failed: %s", exc)
+        _post_bg("/api/check-now", timeout=35.0)
 
     def on_toggle_pause(_icon: Any, _item: Any) -> None:
         endpoint = "resume" if scheduler.is_paused else "pause"
-        try:
-            req = urllib.request.Request(f"{dashboard_url}/api/{endpoint}", method="POST")
-            urllib.request.urlopen(req, timeout=5)
-        except Exception:
-            pass
+        _post_bg(f"/api/{endpoint}", timeout=5.0)
 
     def on_toggle_mute(_icon: Any, _item: Any) -> None:
-        try:
-            req = urllib.request.Request(f"{dashboard_url}/api/mute-desktop", method="POST")
-            urllib.request.urlopen(req, timeout=5)
-        except Exception:
-            pass
+        _post_bg("/api/mute-desktop", timeout=5.0)
 
     def on_quit(icon: Any, _item: Any) -> None:
         server.should_exit = True

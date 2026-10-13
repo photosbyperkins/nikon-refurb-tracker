@@ -15,6 +15,7 @@ from nikon_tracker.database import TrackerDatabase
 from nikon_tracker.models import (
     VariantSnapshot,
     WatchlistEntry,
+    classify_nikon_category,
     clean_promo_message,
     strip_refurb_sku,
     strip_refurb_slug,
@@ -434,7 +435,7 @@ class NikonUSAClient:
         product_key = str(prod.get("key") or "").strip()
         slug = str(prod.get("slug") or "").strip()
         product_type_key = str(prod.get("productTypeKey") or "").strip()
-        category = PRODUCT_TYPE_LABELS.get(product_type_key, "Refurbished Gear")
+        category = classify_nikon_category(product_type_key, slug)
         raw_url = str(prod.get("_url") or f"/p/{slug}/{product_key}").strip()
         if not raw_url.endswith("/overview"):
             raw_url = f"{raw_url.rstrip('/')}/overview"

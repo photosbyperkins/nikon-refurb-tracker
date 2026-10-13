@@ -117,4 +117,54 @@ def test_watchlist_restock_and_target_price() -> None:
     event_types = {e.event_type for e in events}
     assert "WATCHLIST_RESTOCK" in event_types
     assert "WATCHLIST_PRICE" in event_types
+    assert "SUB_50_MSRP" not in event_types
     assert all(e.auto_open_browser for e in events)
+
+
+def test_unknown_msrp_not_cached_and_no_triple_alert(tmp_path: Path) -> None:
+    db = TrackerDatabase(tmp_path / "msrp_cache.db")
+    snap_unknown = VariantSnapshot(
+        sku="1695Q",
+        product_key="1695Q",
+        name="Z 8 — Body Only",
+        slug="z-8-refurbished",
+        product_url="https://www.nikonusa.com/p/z-8-refurbished/1695Q/overview",
+        refurb_reg_cents=273235,
+        refurb_sale_cents=199995,
+        true_msrp_cents=None,
+        msrp_source="unknown",
+        is_on_stock=True,
+        available_quantity=2,
+    )
+    db.upsert_variant(snap_unknown)
+    # Unknown MSRP must NOT return a cache hit
+    assert db.get_cached_msrp("1695Q") is None
+
+    # Once MSRP is resolved, it should be cached
+    snap_resolved = snap_unknown.model_copy(
+        update={"true_msrp_cents": 429995, "msrp_source": "new_catalog"}
+    )
+    db.upsert_variant(snap_resolved)
+    cached = db.get_cached_msrp("1695q")  # case-insensitive
+    assert cached is not None
+    assert cached[0] == 429995
+
+    # Watchlisted item at >50% off MSRP should fire WATCHLIST_PRICE but not duplicate SUB_50_MSRP
+    settings = TrackerSettings(global_discount_threshold_pct=50.0)
+    watch = WatchlistEntry(
+        sku="1695Q",
+        slug="z-8-refurbished",
+        product_key="1695Q",
+        label="Nikon Z 8",
+        min_discount_pct_msrp=50.0,
+        notify_on_restock=True,
+    )
+    events = evaluate_variant_alerts(
+        previous=None,
+        current=snap_resolved,
+        settings=settings,
+        watchlist_by_sku={"1695Q": watch},
+        db=db,
+    )
+    assert [e.event_type for e in events] == ["WATCHLIST_PRICE"]
+

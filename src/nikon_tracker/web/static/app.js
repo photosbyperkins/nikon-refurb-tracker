@@ -103,14 +103,17 @@ async function loadDeals() {
     const data = await res.json();
     allDeals = data.items || [];
 
-    // Populate category dropdown once
+    // Populate/update category dropdown while preserving current selection
     const catSelect = document.getElementById("filter-category");
-    if (catSelect.options.length <= 1 && Array.isArray(data.categories)) {
+    if (Array.isArray(data.categories)) {
+      const existingCats = new Set(Array.from(catSelect.options).map((o) => o.value));
       data.categories.forEach((cat) => {
-        const opt = document.createElement("option");
-        opt.value = cat;
-        opt.textContent = cat;
-        catSelect.appendChild(opt);
+        if (!existingCats.has(cat)) {
+          const opt = document.createElement("option");
+          opt.value = cat;
+          opt.textContent = cat;
+          catSelect.appendChild(opt);
+        }
       });
     }
 
@@ -212,8 +215,8 @@ function renderDealsTable(items, thresholdPct) {
           <td>${savingsBadge}</td>
           <td>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
-              <button class="btn btn-secondary btn-sm" onclick="openHistoryModal('${escapeHtml(item.sku)}')">📈 History</button>
-              <button class="btn btn-secondary btn-sm" onclick="quickWatchSku('${escapeHtml(item.sku)}', '${escapeHtml(item.slug)}', '${escapeHtml(item.product_key)}', '${escapeHtml(item.name.replace(/'/g, "\\'"))}')">🎯 Watch</button>
+              <button class="btn btn-secondary btn-sm" onclick="openHistoryModal('${escapeJsAttr(item.sku)}')">📈 History</button>
+              <button class="btn btn-secondary btn-sm" onclick="quickWatchSku('${escapeJsAttr(item.sku)}', '${escapeJsAttr(item.slug)}', '${escapeJsAttr(item.product_key)}', '${escapeJsAttr(item.name)}')">🎯 Watch</button>
               <a href="${escapeHtml(item.product_url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Buy &rarr;</a>
             </div>
           </td>
@@ -229,7 +232,13 @@ function escapeHtml(str) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeJsAttr(str) {
+  if (!str) return "";
+  return escapeHtml(String(str).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
 }
 
 // --- Manual MSRP Override ---
@@ -374,10 +383,9 @@ function renderCatalogPicker() {
         msrpHtml = `${fmtCurrency(p.msrp_dollars)} ${discBadge}`;
       }
 
-      const safeLabel = escapeHtml(p.label).replace(/'/g, "\\'");
       const actionBtn = isWatched
         ? `<span class="badge badge-instock">✅ Watching</span>`
-        : `<button type="button" class="btn btn-primary btn-sm" onclick="addPresetToWatchlist('${escapeHtml(p.sku)}', '${escapeHtml(p.slug)}', '${escapeHtml(p.product_key)}', '${safeLabel}')">🎯 + Watch</button>`;
+        : `<button type="button" class="btn btn-primary btn-sm" onclick="addPresetToWatchlist('${escapeJsAttr(p.sku)}', '${escapeJsAttr(p.slug)}', '${escapeJsAttr(p.product_key)}', '${escapeJsAttr(p.label)}')">🎯 + Watch</button>`;
 
       return `
         <tr>

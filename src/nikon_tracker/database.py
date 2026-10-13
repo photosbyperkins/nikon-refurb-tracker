@@ -149,9 +149,10 @@ class TrackerDatabase:
                 )
 
     def get_variant(self, sku: str) -> VariantSnapshot | None:
+        clean_sku = sku.strip().upper()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM products_variants WHERE sku = ?", (sku,)
+                "SELECT * FROM products_variants WHERE sku = ?", (clean_sku,)
             ).fetchone()
             return self._row_to_variant(row) if row else None
 
@@ -164,29 +165,34 @@ class TrackerDatabase:
 
     def get_cached_msrp(
         self, sku: str, max_age_hours: int = 24
-    ) -> tuple[int | None, int | None, str] | None:
-        """Return (true_msrp_cents, new_retail_cents, msrp_source) if cached and fresh."""
+    ) -> tuple[int, int | None, str] | None:
+        """Return (true_msrp_cents, new_retail_cents, msrp_source) if cached, positive, and fresh."""
+        clean_sku = sku.strip().upper()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT true_msrp_cents, new_retail_cents, msrp_source, msrp_updated_at FROM products_variants WHERE sku = ?",
-                (sku,),
+                (clean_sku,),
             ).fetchone()
             if not row:
                 return None
-            source = row["msrp_source"]
-            if source == "manual" and row["true_msrp_cents"]:
-                return (row["true_msrp_cents"], row["new_retail_cents"], "manual")
+            msrp_cents = row["true_msrp_cents"]
+            if not isinstance(msrp_cents, int) or msrp_cents <= 0:
+                return None
+            source = row["msrp_source"] or "unknown"
+            if source == "manual":
+                return (msrp_cents, row["new_retail_cents"], "manual")
             if row["msrp_updated_at"]:
                 try:
                     updated = datetime.fromisoformat(row["msrp_updated_at"])
                     if datetime.now(timezone.utc) - updated < timedelta(hours=max_age_hours):
-                        return (row["true_msrp_cents"], row["new_retail_cents"], source)
+                        return (msrp_cents, row["new_retail_cents"], source)
                 except ValueError:
                     pass
             return None
 
     def set_manual_msrp(self, sku: str, msrp_dollars: float) -> VariantSnapshot | None:
         """Allow user to manually set or override the New MSRP for a SKU."""
+        clean_sku = sku.strip().upper()
         msrp_cents = int(round(msrp_dollars * 100))
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -196,9 +202,9 @@ class TrackerDatabase:
                 SET true_msrp_cents = ?, msrp_source = 'manual', msrp_updated_at = ?, updated_at = ?
                 WHERE sku = ?
                 """,
-                (msrp_cents, now, now, sku),
+                (msrp_cents, now, now, clean_sku),
             )
-        return self.get_variant(sku)
+        return self.get_variant(clean_sku)
 
     def upsert_variant(
         self, snapshot: VariantSnapshot
@@ -212,15 +218,25 @@ class TrackerDatabase:
         snapshot.updated_at = now
 
         # Preserve manual MSRP override or existing catalog MSRP if new snapshot didn't resolve one
-        msrp_updated_at: str | None = now
+        msrp_updated_at: str | None = (
+            now if (snapshot.true_msrp_cents and snapshot.true_msrp_cents > 0) else None
+        )
         if previous:
             if previous.msrp_source == "manual" and previous.true_msrp_cents:
                 snapshot.true_msrp_cents = previous.true_msrp_cents
                 snapshot.msrp_source = "manual"
+                msrp_updated_at = None
             elif not snapshot.true_msrp_cents and previous.true_msrp_cents:
                 snapshot.true_msrp_cents = previous.true_msrp_cents
                 snapshot.new_retail_cents = snapshot.new_retail_cents or previous.new_retail_cents
                 snapshot.msrp_source = previous.msrp_source
+                msrp_updated_at = None
+            elif (
+                snapshot.true_msrp_cents == previous.true_msrp_cents
+                and snapshot.msrp_source == previous.msrp_source
+            ):
+                # Keep original msrp_updated_at timestamp so the 24h TTL expires naturally
+                msrp_updated_at = None
 
             lows = [
                 c
@@ -377,6 +393,7 @@ class TrackerDatabase:
                     )
 
     def get_history(self, sku: str, limit: int = 200) -> list[dict[str, object]]:
+        clean_sku = sku.strip().upper()
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -386,7 +403,7 @@ class TrackerDatabase:
                 ORDER BY recorded_at DESC
                 LIMIT ?
                 """,
-                (sku, limit),
+                (clean_sku, limit),
             ).fetchall()
             points = [
                 {
@@ -483,6 +500,7 @@ class TrackerDatabase:
     def has_recent_alert(
         self, sku: str, event_type: str, effective_price_dollars: float, cooldown_minutes: int
     ) -> bool:
+        clean_sku = sku.strip().upper()
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes)).isoformat()
         with self._connect() as conn:
             row = conn.execute(
@@ -491,7 +509,7 @@ class TrackerDatabase:
                 WHERE sku = ? AND event_type = ? AND ABS(effective_price_dollars - ?) < 0.05 AND triggered_at >= ?
                 LIMIT 1
                 """,
-                (sku, event_type, effective_price_dollars, cutoff),
+                (clean_sku, event_type, effective_price_dollars, cutoff),
             ).fetchone()
             return row is not None
 

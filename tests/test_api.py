@@ -69,8 +69,8 @@ def test_api_endpoints(tmp_path: Path) -> None:
     assert sub50_deals["count"] == 1
     assert sub50_deals["items"][0]["sku"] == "1663B"
 
-    # 3. Manual MSRP override endpoint
-    override_res = client.post("/api/deals/1659B/msrp", json={"msrp_dollars": 1999.95})
+    # 3. Manual MSRP override endpoint (case-insensitive SKU)
+    override_res = client.post("/api/deals/1659b/msrp", json={"msrp_dollars": 1999.95})
     assert override_res.status_code == 200
     override_data = override_res.json()
     assert override_data["msrp_dollars"] == 1999.95

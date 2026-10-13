@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -11,11 +12,21 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, computed_field
 
 
+def resolve_package_path(relative_subpath: str) -> Path:
+    """Resolve package resource path across normal Python and PyInstaller --onefile bundles."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(meipass) / "nikon_tracker" / relative_subpath
+        if candidate.exists():
+            return candidate
+    return Path(__file__).parent / relative_subpath
+
+
 def strip_refurb_sku(sku: str) -> str:
     """Strip trailing B or Q refurbished suffix from a NikonUSA SKU/key."""
     if not sku:
         return ""
-    return re.sub(r"[BQ]$", "", sku.strip())
+    return re.sub(r"[BQ]$", "", sku.strip().upper())
 
 
 def strip_refurb_slug(slug: str) -> str:
@@ -81,6 +92,8 @@ class VariantSnapshot(BaseModel):
     )
 
     def model_post_init(self, __context: object) -> None:
+        self.sku = self.sku.strip().upper()
+        self.product_key = self.product_key.strip().upper()
         if not self.new_sku:
             self.new_sku = strip_refurb_sku(self.sku)
         if not self.new_product_key:
@@ -347,6 +360,37 @@ CATALOG_CATEGORIES: list[str] = [
     "Legacy AF / Manual F-Mount Lenses",
 ]
 
+def classify_nikon_category(product_type_key: str, slug: str) -> str:
+    """Map NikonUSA productTypeKey and slug into unified human-readable categories."""
+    p_type = (product_type_key or "").strip().lower()
+    s = (slug or "").strip().lower()
+    if p_type == "pt-mirrorless-cameras":
+        return "Mirrorless Cameras (Z Series)"
+    if p_type in ("pt-cinemacam", "pt-cinema-cameras"):
+        return "Cinema Cameras (Z Cinema)"
+    if p_type in ("pt-lenses", "pt-lenses-nikon1"):
+        if "nikkor-z" in s or "z-teleconverter" in s:
+            return "NIKKOR Z Lenses & Teleconverters"
+        if s.startswith(("af-s-", "af-p-", "pc-")):
+            return "F-Mount DSLR Lenses (AF-S / AF-P / PC)"
+        return "Legacy AF / Manual F-Mount Lenses"
+    if p_type in ("pt-slr-cameras", "pt-dslr-cameras"):
+        return "DSLR Cameras"
+    if p_type == "pt-accessories":
+        return "Adapters & Accessories (FTZ)"
+    if p_type == "pt-flashes":
+        return "Flashes & Speedlights"
+    if p_type in ("pt-digital-cameras", "pt-point-shoot-cameras"):
+        return "Compact & Superzoom Cameras (COOLPIX)"
+    if p_type.startswith("pt-sport-optics") or p_type in (
+        "pt-binoculars",
+        "pt-rangefinders",
+        "pt-fieldscopes",
+    ):
+        return "Sport Optics (Binoculars, Rangefinders, Fieldscopes)"
+    return "Refurbished Gear"
+
+
 _CACHED_CATALOG: list[dict[str, Any]] | None = None
 
 
@@ -355,7 +399,7 @@ def load_refurbished_catalog() -> list[dict[str, Any]]:
     global _CACHED_CATALOG
     if _CACHED_CATALOG is not None:
         return _CACHED_CATALOG
-    catalog_path = Path(__file__).parent / "data" / "refurbished_catalog.json"
+    catalog_path = resolve_package_path("data/refurbished_catalog.json")
     if catalog_path.exists():
         try:
             _CACHED_CATALOG = json.loads(catalog_path.read_text(encoding="utf-8"))
