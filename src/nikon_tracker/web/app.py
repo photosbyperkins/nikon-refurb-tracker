@@ -95,6 +95,7 @@ def create_app(
         sort_by: str = Query(default="discount_desc"),
     ) -> dict[str, Any]:
         variants = tracker_db.get_all_variants()
+        velocity_map = tracker_db.get_velocity_map(variants)
         settings = tracker_db.get_settings()
         threshold = settings.global_discount_threshold_pct
 
@@ -116,6 +117,14 @@ def create_app(
                     continue
             filtered.append(v)
 
+        def _velocity_sort_key(item: VariantSnapshot) -> tuple[int, float, float, int]:
+            vel = velocity_map.get(item.sku.upper(), {})
+            est_h = vel.get("estimated_hours_left")
+            burn_h = float(vel.get("burn_rate_per_hour") or 0.0)
+            urgency = (1000.0 / max(0.1, float(est_h))) if isinstance(est_h, (int, float)) else 0.0
+            low_stock_score = -item.available_quantity if item.is_on_stock and item.available_quantity > 0 else -999999
+            return (1 if item.is_on_stock else 0, urgency, burn_h, low_stock_score)
+
         if sort_by == "discount_desc":
             filtered.sort(
                 key=lambda x: (
@@ -124,6 +133,16 @@ def create_app(
                 ),
                 reverse=True,
             )
+        elif sort_by == "savings_desc":
+            filtered.sort(
+                key=lambda x: (
+                    1 if x.is_on_stock else 0,
+                    x.savings_vs_msrp_dollars if x.savings_vs_msrp_dollars is not None else -999999.0,
+                ),
+                reverse=True,
+            )
+        elif sort_by == "velocity_desc":
+            filtered.sort(key=_velocity_sort_key, reverse=True)
         elif sort_by == "price_asc":
             filtered.sort(key=lambda x: (0 if x.is_on_stock else 1, x.refurb_sale_cents))
         elif sort_by == "price_desc":
@@ -134,11 +153,18 @@ def create_app(
             filtered.sort(key=lambda x: x.name.lower())
 
         categories = sorted({v.category for v in variants if v.category})
+        enriched_items = []
+        for v in filtered:
+            d = v.model_dump()
+            d["velocity"] = velocity_map.get(v.sku.upper())
+            enriched_items.append(d)
+
         return {
             "count": len(filtered),
+            "total_count": len(variants),
             "threshold_pct": threshold,
             "categories": categories,
-            "items": [v.model_dump() for v in filtered],
+            "items": enriched_items,
         }
 
     @app.post("/api/deals/{sku}/msrp")
@@ -152,11 +178,16 @@ def create_app(
 
     @app.get("/api/history/{sku}")
     async def get_sku_history(sku: str) -> dict[str, Any]:
-        variant = tracker_db.get_variant(sku.strip())
-        points = tracker_db.get_history(sku.strip())
+        clean_sku = sku.strip().upper()
+        variant = tracker_db.get_variant(clean_sku)
+        points = tracker_db.get_history(clean_sku)
+        daily_points = tracker_db.get_daily_history(clean_sku)
+        vel_map = tracker_db.get_velocity_map([variant] if variant else [])
         return {
-            "sku": sku.strip(),
+            "sku": clean_sku,
             "variant": variant.model_dump() if variant else None,
+            "velocity": vel_map.get(clean_sku),
+            "daily_history": daily_points,
             "history": points,
         }
 

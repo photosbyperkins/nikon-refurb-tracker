@@ -329,9 +329,15 @@ class TrackerDatabase:
                 ),
             )
 
-            # Record history point if new SKU or if price/stock changed
+            # Record history point if new SKU, if price/stock changed, or once per new UTC day
+            last_hist_row = conn.execute(
+                "SELECT recorded_at FROM price_stock_history WHERE sku = ? ORDER BY recorded_at DESC LIMIT 1",
+                (snapshot.sku,),
+            ).fetchone()
+            last_hist_day = str(last_hist_row["recorded_at"])[:10] if last_hist_row else ""
             should_record = (
                 previous is None
+                or last_hist_day != now[:10]
                 or previous.refurb_sale_cents != snapshot.refurb_sale_cents
                 or previous.refurb_reg_cents != snapshot.refurb_reg_cents
                 or previous.is_on_stock != snapshot.is_on_stock
@@ -419,6 +425,215 @@ class TrackerDatabase:
                 for r in reversed(rows)
             ]
             return points
+
+    def get_daily_history(self, sku: str, limit_days: int = 90) -> list[dict[str, object]]:
+        """Aggregate price_stock_history into a day-by-day rollup with stock velocity metrics."""
+        clean_sku = sku.strip().upper()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT refurb_sale_cents, refurb_reg_cents, true_msrp_cents,
+                       is_on_stock, available_quantity, recorded_at
+                FROM price_stock_history
+                WHERE sku = ?
+                ORDER BY recorded_at ASC
+                """,
+                (clean_sku,),
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        daily_buckets: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            day_key = str(r["recorded_at"])[:10]
+            daily_buckets.setdefault(day_key, []).append(r)
+
+        rollups: list[dict[str, object]] = []
+        prev_close_qty: int | None = None
+
+        for day_key in sorted(daily_buckets.keys()):
+            day_rows = daily_buckets[day_key]
+            sale_prices = [round(r["refurb_sale_cents"] / 100.0, 2) for r in day_rows]
+            reg_prices = [round(r["refurb_reg_cents"] / 100.0, 2) for r in day_rows]
+            msrps = [
+                round(r["true_msrp_cents"] / 100.0, 2)
+                for r in day_rows
+                if r["true_msrp_cents"]
+            ]
+            qtys = [int(r["available_quantity"] or 0) for r in day_rows]
+
+            open_qty = prev_close_qty if prev_close_qty is not None else qtys[0]
+            close_qty = qtys[-1]
+            high_qty = max(qtys)
+            low_qty = min(qtys)
+
+            units_sold = 0
+            units_restocked = 0
+            seq = ([prev_close_qty] + qtys) if prev_close_qty is not None else qtys
+            for i in range(1, len(seq)):
+                delta = seq[i] - seq[i - 1]
+                if delta < 0:
+                    units_sold += abs(delta)
+                elif delta > 0:
+                    units_restocked += delta
+
+            net_change = close_qty - open_qty
+            prev_close_qty = close_qty
+
+            last_row = day_rows[-1]
+            rollups.append(
+                {
+                    "date": day_key,
+                    "effective_price_dollars": sale_prices[-1],
+                    "low_price_dollars": min(sale_prices),
+                    "high_price_dollars": max(sale_prices),
+                    "refurb_reg_dollars": reg_prices[-1],
+                    "msrp_dollars": msrps[-1] if msrps else None,
+                    "is_on_stock": bool(last_row["is_on_stock"]),
+                    "open_quantity": open_qty,
+                    "close_quantity": close_qty,
+                    "available_quantity": close_qty,
+                    "high_quantity": high_qty,
+                    "low_quantity": low_qty,
+                    "net_quantity_change": net_change,
+                    "units_sold_est": units_sold,
+                    "units_restocked": units_restocked,
+                    "snapshots_count": len(day_rows),
+                    "recorded_at": last_row["recorded_at"],
+                }
+            )
+
+        return rollups[-limit_days:]
+
+    def get_velocity_map(self, variants: list[VariantSnapshot] | None = None) -> dict[str, dict[str, object]]:
+        """Compute 24h/7d unit velocity, burn rate, and sellout predictions for all tracked SKUs."""
+        if variants is None:
+            variants = self.get_all_variants()
+        variants_by_sku = {v.sku.upper(): v for v in variants}
+
+        now_dt = datetime.now(timezone.utc)
+        cutoff_7d = (now_dt - timedelta(days=7)).isoformat()
+        cutoff_24h = (now_dt - timedelta(hours=24)).isoformat()
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT sku, available_quantity, is_on_stock, recorded_at
+                FROM price_stock_history
+                ORDER BY sku ASC, recorded_at ASC
+                """
+            ).fetchall()
+
+        rows_by_sku: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            sku_key = str(r["sku"]).upper()
+            rows_by_sku.setdefault(sku_key, []).append(r)
+
+        result: dict[str, dict[str, object]] = {}
+        for sku_key, v in variants_by_sku.items():
+            sku_rows = rows_by_sku.get(sku_key, [])
+            current_qty = int(v.available_quantity or 0) if v.is_on_stock else 0
+
+            sold_24h = 0
+            restocked_24h = 0
+            sold_7d = 0
+            first_24h_ts: str | None = None
+            first_7d_ts: str | None = None
+            start_qty_24h: int = current_qty
+
+            for idx, r in enumerate(sku_rows):
+                rec_at = str(r["recorded_at"])
+                qty = int(r["available_quantity"] or 0)
+                if rec_at >= cutoff_7d and first_7d_ts is None:
+                    first_7d_ts = cutoff_7d if idx > 0 else rec_at
+                if rec_at >= cutoff_24h and first_24h_ts is None:
+                    if idx > 0:
+                        first_24h_ts = cutoff_24h
+                        start_qty_24h = int(sku_rows[idx - 1]["available_quantity"] or 0)
+                    else:
+                        first_24h_ts = rec_at
+                        start_qty_24h = qty
+
+                if idx > 0:
+                    prev_qty = int(sku_rows[idx - 1]["available_quantity"] or 0)
+                    delta = qty - prev_qty
+                    if delta < 0:
+                        if rec_at >= cutoff_7d:
+                            sold_7d += abs(delta)
+                        if rec_at >= cutoff_24h:
+                            sold_24h += abs(delta)
+                    elif delta > 0 and rec_at >= cutoff_24h:
+                        restocked_24h += delta
+
+            burn_rate_per_hour = 0.0
+            if sold_24h > 0 and first_24h_ts:
+                try:
+                    start_dt = datetime.fromisoformat(first_24h_ts)
+                    elapsed_h = max(1.0, min(24.0, (now_dt - start_dt).total_seconds() / 3600.0))
+                    burn_rate_per_hour = sold_24h / elapsed_h
+                except ValueError:
+                    burn_rate_per_hour = sold_24h / 24.0
+            elif sold_7d > 0 and first_7d_ts:
+                try:
+                    start_dt = datetime.fromisoformat(first_7d_ts)
+                    elapsed_h = max(24.0, min(168.0, (now_dt - start_dt).total_seconds() / 3600.0))
+                    burn_rate_per_hour = sold_7d / elapsed_h
+                except ValueError:
+                    burn_rate_per_hour = sold_7d / 168.0
+
+            burn_rate_per_day = round(burn_rate_per_hour * 24.0, 1)
+            est_hours_left: float | None = None
+            if v.is_on_stock and current_qty > 0 and burn_rate_per_hour > 0:
+                est_hours_left = round(current_qty / burn_rate_per_hour, 1)
+
+            sellout_today_likely = bool(
+                v.is_on_stock
+                and current_qty > 0
+                and est_hours_left is not None
+                and est_hours_left <= 24.0
+            )
+
+            if not v.is_on_stock or current_qty <= 0:
+                sellout_risk = "out_of_stock"
+                sellout_forecast = "Out of Stock"
+            elif est_hours_left is not None:
+                if est_hours_left < 1.0:
+                    sellout_risk = "critical"
+                    sellout_forecast = "⚡ Sells out in < 1h"
+                elif est_hours_left <= 6.0:
+                    sellout_risk = "critical"
+                    sellout_forecast = f"⚡ Sells out in ~{est_hours_left:.1f}h"
+                elif est_hours_left <= 24.0:
+                    sellout_risk = "high"
+                    sellout_forecast = f"🔥 Sells out today (~{round(est_hours_left)}h left)"
+                elif est_hours_left <= 72.0:
+                    sellout_risk = "moderate"
+                    sellout_forecast = f"⏳ ~{est_hours_left / 24.0:.1f}d supply left"
+                else:
+                    sellout_risk = "low"
+                    sellout_forecast = f"~{round(est_hours_left / 24.0)}d supply"
+            elif current_qty <= 3:
+                sellout_risk = "low_stock"
+                sellout_forecast = f"⚠️ Low stock ({current_qty} left)"
+            else:
+                sellout_risk = "low"
+                sellout_forecast = "Stable stock"
+
+            result[sku_key] = {
+                "units_sold_24h": sold_24h,
+                "units_restocked_24h": restocked_24h,
+                "units_sold_7d": sold_7d,
+                "net_change_24h": current_qty - start_qty_24h,
+                "burn_rate_per_hour": round(burn_rate_per_hour, 2),
+                "burn_rate_per_day": burn_rate_per_day,
+                "estimated_hours_left": est_hours_left,
+                "sellout_today_likely": sellout_today_likely,
+                "sellout_risk": sellout_risk,
+                "sellout_forecast": sellout_forecast,
+            }
+
+        return result
 
     # --- Watchlist CRUD ---
     def get_watchlist(self) -> list[WatchlistEntry]:

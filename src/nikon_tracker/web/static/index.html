@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NikonUSA Refurbished Tracker — Sub-50% MSRP & Restock Alerts</title>
+  <title>NikonUSA Refurbished Tracker — Sub-50% MSRP &amp; Restock Alerts</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <div class="nikon-badge">N</div>
+      <div class="nikon-badge" aria-hidden="true">N</div>
       <div>
         <h1>NikonUSA Refurbished Tracker</h1>
         <p class="subtitle">True New-MSRP Resolver • Sub-50% MSRP &amp; Flash Sale Alert Engine</p>
@@ -17,14 +17,14 @@
     </div>
 
     <div class="topbar-actions">
-      <div id="poller-status-pill" class="status-pill">
+      <div id="poller-status-pill" class="status-pill" title="Background poller status">
         <span class="status-dot" id="status-dot"></span>
         <span id="status-text">Connecting...</span>
       </div>
       <button id="btn-check-now" class="btn btn-primary" title="Scan NikonUSA right now">
         ⚡ Check Now
       </button>
-      <button id="btn-pause-resume" class="btn btn-secondary">
+      <button id="btn-pause-resume" class="btn btn-secondary" title="Pause or resume background polling">
         ⏸ Pause
       </button>
       <button id="btn-test-alert" class="btn btn-secondary" title="Send a test alert to enabled channels">
@@ -34,27 +34,33 @@
   </header>
 
   <main class="container">
-    <!-- KPI Summary Cards -->
-    <section class="kpi-grid">
-      <div class="kpi-card kpi-hot" id="kpi-sub50-card" title="Click to filter deals <= 50% of MSRP">
+    <!-- Poll Error Banner (hidden when healthy) -->
+    <div id="error-banner" class="error-banner hidden" role="alert">
+      <span id="error-banner-text"></span>
+      <button type="button" class="btn btn-secondary btn-sm" id="btn-retry-error">⚡ Retry Now</button>
+    </div>
+
+    <!-- KPI Summary Cards (All Interactive) -->
+    <section class="kpi-grid" aria-label="Deal Summary Metrics">
+      <div class="kpi-card kpi-hot" id="kpi-sub50-card" role="button" tabindex="0" title="Click to toggle filter: Deals >= 50% off Official New MSRP">
         <div class="kpi-label">🔥 &ge;<span id="kpi-threshold-label">50</span>% Off MSRP Deals</div>
         <div class="kpi-value" id="kpi-sub50-count">0</div>
         <div class="kpi-sub">In-stock items at &le;50% of official New MSRP</div>
       </div>
 
-      <div class="kpi-card">
+      <div class="kpi-card" id="kpi-instock-card" role="button" tabindex="0" title="Click to toggle filter: In-Stock items vs All Tracked SKUs">
         <div class="kpi-label">📦 In-Stock Refurbished</div>
         <div class="kpi-value"><span id="kpi-instock-count">0</span> <small id="kpi-total-skus">/ 0 SKUs</small></div>
-        <div class="kpi-sub">Live variants on nikonusa.com/refurbished-cameras</div>
+        <div class="kpi-sub">Click to toggle In-Stock vs All Tracked SKUs</div>
       </div>
 
-      <div class="kpi-card" id="kpi-extrasale-card" title="Click to filter items with extra refurb flash promo">
+      <div class="kpi-card" id="kpi-extrasale-card" role="button" tabindex="0" title="Click to toggle filter: Items with extra refurb flash promo">
         <div class="kpi-label">🏷️ Extra Refurb Flash Sale</div>
         <div class="kpi-value" id="kpi-extrasale-count">0</div>
         <div class="kpi-sub">Additional % discount below regular refurb price</div>
       </div>
 
-      <div class="kpi-card" id="kpi-watchlist-card">
+      <div class="kpi-card" id="kpi-watchlist-card" role="button" tabindex="0" title="Click to open your Custom Watchlist & Out-of-Stock Monitor">
         <div class="kpi-label">🎯 Custom Watchlist</div>
         <div class="kpi-value" id="kpi-watchlist-count">0</div>
         <div class="kpi-sub" id="kpi-last-poll">Last poll: Never</div>
@@ -62,46 +68,57 @@
     </section>
 
     <!-- Navigation Tabs -->
-    <nav class="tabs">
-      <button class="tab-btn active" data-tab="deals">📷 Live Refurbished Deals</button>
-      <button class="tab-btn" data-tab="watchlist">🎯 Watchlist &amp; Out-of-Stock Monitor</button>
-      <button class="tab-btn" data-tab="alerts">🔔 Alert Log</button>
-      <button class="tab-btn" data-tab="settings">⚙️ Alert &amp; Tracker Settings</button>
+    <nav class="tabs" role="tablist" aria-label="Tracker Views">
+      <button class="tab-btn active" data-tab="deals" role="tab" aria-selected="true">
+        📷 Live Refurbished Deals <span class="tab-badge" id="tab-badge-deals">0</span>
+      </button>
+      <button class="tab-btn" data-tab="watchlist" role="tab" aria-selected="false">
+        🎯 Watchlist &amp; Out-of-Stock Catalog <span class="tab-badge" id="tab-badge-watchlist">0</span>
+      </button>
+      <button class="tab-btn" data-tab="alerts" role="tab" aria-selected="false">
+        🔔 Alert Log <span class="tab-badge" id="tab-badge-alerts">0</span>
+      </button>
+      <button class="tab-btn" data-tab="settings" role="tab" aria-selected="false">
+        ⚙️ Alert &amp; Tracker Settings
+      </button>
     </nav>
 
     <!-- TAB 1: Live Deals -->
-    <section id="tab-deals" class="tab-panel active">
+    <section id="tab-deals" class="tab-panel active" role="tabpanel">
       <div class="filter-bar">
         <input
           type="search"
           id="filter-search"
           class="input search-input"
-          placeholder="Search model, lens, SKU (e.g. Z 6II, 24-70, 1659B, 2181B)..."
+          placeholder="Press / to search model, lens, SKU (e.g. Z 8, Z 6III, Plena, 180-600, 1695Q)..."
+          aria-label="Search refurbished deals"
         />
 
-        <select id="filter-category" class="select">
+        <select id="filter-category" class="select" aria-label="Filter by category">
           <option value="ALL">All Categories</option>
         </select>
 
-        <select id="filter-sort" class="select">
+        <select id="filter-sort" class="select" aria-label="Sort deals">
           <option value="discount_desc">Sort: Biggest % Off MSRP</option>
+          <option value="savings_desc">Sort: Biggest $ Savings</option>
+          <option value="velocity_desc">Sort: Fastest Selling / Sellout Risk</option>
           <option value="price_asc">Sort: Price (Low to High)</option>
           <option value="price_desc">Sort: Price (High to Low)</option>
           <option value="stock_desc">Sort: Warehouse Stock Qty</option>
           <option value="name_asc">Sort: Name (A–Z)</option>
         </select>
 
-        <label class="chip-toggle hot-chip">
+        <label class="chip-toggle hot-chip" title="Only show deals at or below 50% of New MSRP">
           <input type="checkbox" id="filter-sub50" />
           <span>🔥 &le;50% of MSRP Only</span>
         </label>
 
-        <label class="chip-toggle">
+        <label class="chip-toggle" title="Only show items currently available to add to cart">
           <input type="checkbox" id="filter-instock" checked />
           <span>✅ In Stock Only</span>
         </label>
 
-        <label class="chip-toggle">
+        <label class="chip-toggle" title="Only show items with an extra promotional price drop below regular refurb price">
           <input type="checkbox" id="filter-extrasale" />
           <span>🏷️ Extra Promo Active</span>
         </label>
@@ -111,15 +128,33 @@
         </button>
       </div>
 
+      <!-- Quick Category Bar & Results Counter -->
+      <div class="results-summary-bar">
+        <div class="quick-cats" id="quick-category-pills" role="group" aria-label="Quick category filter">
+          <button type="button" class="cat-pill active" data-cat="ALL">All Gear</button>
+          <button type="button" class="cat-pill" data-cat="Mirrorless Cameras (Z Series)">Mirrorless (Z)</button>
+          <button type="button" class="cat-pill" data-cat="NIKKOR Z Lenses">NIKKOR Z Lenses</button>
+          <button type="button" class="cat-pill" data-cat="DSLR Cameras">DSLRs</button>
+          <button type="button" class="cat-pill" data-cat="F-Mount NIKKOR Lenses">F-Mount Lenses</button>
+          <button type="button" class="cat-pill" data-cat="FTZ Adapters & Teleconverters">FTZ &amp; Teleconverters</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span id="deals-results-count">Loading deals...</span>
+          <button type="button" id="btn-reset-filters" class="btn btn-secondary btn-sm hidden" title="Reset search and filters to default">
+            ↺ Reset Filters
+          </button>
+        </div>
+      </div>
+
       <div class="table-wrapper">
-        <table class="deals-table">
+        <table class="deals-table" id="live-deals-table">
           <thead>
             <tr>
-              <th>Product &amp; SKU</th>
-              <th>Stock Status</th>
-              <th>Refurb Sale Price</th>
+              <th class="sortable" data-sort="name_asc" title="Click to sort by Product Name (A-Z)">Product &amp; SKU ↕</th>
+              <th class="sortable" data-sort="velocity_desc" title="Click to toggle sort by Sellout Risk / Velocity vs Warehouse Stock Qty">Stock &amp; Velocity ↕</th>
+              <th class="sortable" data-sort="price_asc" title="Click to toggle sort by Refurb Sale Price">Refurb Sale Price ↕</th>
               <th>Official New MSRP</th>
-              <th>Savings vs MSRP</th>
+              <th class="sortable active-sort" data-sort="discount_desc" title="Click to toggle sort by % Off MSRP vs $ Savings">Savings vs MSRP ↓</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -133,10 +168,13 @@
     </section>
 
     <!-- TAB 2: Watchlist & Out-of-Stock Catalog -->
-    <section id="tab-watchlist" class="tab-panel">
+    <section id="tab-watchlist" class="tab-panel" role="tabpanel">
       <div class="panel-grid">
         <div class="card">
-          <h3>Active Watchlist Rules</h3>
+          <div class="card-header-row">
+            <h3>Active Watchlist Rules</h3>
+            <span class="muted" style="font-size: 12px;">Polled directly on every cycle</span>
+          </div>
           <p class="muted">
             Watchlisted items are polled directly on every cycle (even when out of stock and hidden from Nikon's main refurbished page) for instant restock or target price alerts.
           </p>
@@ -157,14 +195,17 @@
           </div>
         </div>
 
-        <div class="card">
-          <h3>Add Custom NikonUSA URL or SKU Rule</h3>
+        <div class="card" id="watchlist-form-card">
+          <div class="card-header-row">
+            <h3 id="wl-form-title">Add or Edit Watchlist Rule</h3>
+            <button type="button" id="btn-cancel-wl-edit" class="btn btn-secondary btn-sm hidden">Cancel Edit</button>
+          </div>
           <p class="muted">
-            Paste any NikonUSA refurbished URL or SKU and customize target price / % off MSRP thresholds:
+            Paste any NikonUSA refurbished URL or SKU (or click <strong>✏️ Edit</strong> on an existing rule) and customize target price / % off MSRP thresholds:
           </p>
           <form id="watchlist-form" class="form-stack">
             <div>
-              <label>NikonUSA Product URL or SKU</label>
+              <label for="wl-url-sku">NikonUSA Product URL or SKU</label>
               <input
                 type="text"
                 id="wl-url-sku"
@@ -175,15 +216,15 @@
             </div>
             <div class="form-row">
               <div>
-                <label>Custom Label (optional)</label>
+                <label for="wl-label">Custom Label (optional)</label>
                 <input type="text" id="wl-label" class="input" placeholder="Auto-detected from NikonUSA" />
               </div>
               <div>
-                <label>Max Target Price ($ USD, optional)</label>
+                <label for="wl-max-price">Max Target Price ($ USD, optional)</label>
                 <input type="number" step="0.01" id="wl-max-price" class="input" placeholder="e.g. 1999.95" />
               </div>
               <div>
-                <label>Min % Off MSRP Alert</label>
+                <label for="wl-min-discount">Min % Off MSRP Alert</label>
                 <input type="number" step="1" id="wl-min-discount" class="input" value="50" />
               </div>
             </div>
@@ -197,7 +238,7 @@
                 <span>Auto-open NikonUSA product page in browser when triggered</span>
               </label>
             </div>
-            <button type="submit" class="btn btn-primary">➕ Add / Update Watchlist Rule</button>
+            <button type="submit" id="btn-submit-wl" class="btn btn-primary">➕ Save Watchlist Rule</button>
           </form>
         </div>
       </div>
@@ -227,13 +268,14 @@
             id="catalog-search"
             class="input search-input"
             placeholder="Search 266 items: Z 8, Z 9, Z6III, Z f, Plena, 180-600, 24-70, 70-200, FTZ II, D850, 1695Q..."
+            aria-label="Search full refurbished catalog"
           />
 
-          <select id="catalog-category" class="select">
-            <option value="ALL">All 10 Categories (266 SKUs)</option>
+          <select id="catalog-category" class="select" aria-label="Filter catalog by category">
+            <option value="ALL">All Categories (266 SKUs)</option>
           </select>
 
-          <select id="catalog-stock-filter" class="select">
+          <select id="catalog-stock-filter" class="select" aria-label="Filter catalog by stock state">
             <option value="ALL">All Stock States</option>
             <option value="OOS">Out-of-Stock Only (Hidden Pages)</option>
             <option value="INSTOCK">Currently In Stock</option>
@@ -260,7 +302,7 @@
     </section>
 
     <!-- TAB 3: Alert Log -->
-    <section id="tab-alerts" class="tab-panel">
+    <section id="tab-alerts" class="tab-panel" role="tabpanel">
       <div class="card">
         <div class="card-header-row">
           <h3>Triggered Alert History</h3>
@@ -285,23 +327,23 @@
     </section>
 
     <!-- TAB 4: Settings -->
-    <section id="tab-settings" class="tab-panel">
+    <section id="tab-settings" class="tab-panel" role="tabpanel">
       <form id="settings-form" class="settings-grid">
         <div class="card">
           <h3>⚡ Polling &amp; Deal Threshold Rules</h3>
           <div class="form-stack">
             <div>
-              <label>Polling Interval (seconds, min 15s)</label>
+              <label for="set-poll-interval">Polling Interval (seconds, min 15s)</label>
               <input type="number" id="set-poll-interval" class="input" min="15" max="3600" value="60" />
               <small class="muted">Default 60s. Set to 20–30s during major Nikon refurbished flash sales.</small>
             </div>
             <div>
-              <label>Global Hot-Deal Threshold (% Off Official New MSRP)</label>
+              <label for="set-discount-threshold">Global Hot-Deal Threshold (% Off Official New MSRP)</label>
               <input type="number" id="set-discount-threshold" class="input" min="5" max="90" step="1" value="50" />
               <small class="muted">50% means alert whenever Refurb Sale Price &le; 50% of Brand-New MSRP.</small>
             </div>
             <div>
-              <label>Duplicate Alert Cooldown (minutes)</label>
+              <label for="set-cooldown">Duplicate Alert Cooldown (minutes)</label>
               <input type="number" id="set-cooldown" class="input" min="1" max="10080" value="360" />
             </div>
             <label class="checkbox-label">
@@ -338,15 +380,15 @@
               <span>Enable ntfy.sh Push Notifications</span>
             </label>
             <div>
-              <label>ntfy Server URL</label>
+              <label for="set-ntfy-server">ntfy Server URL</label>
               <input type="url" id="set-ntfy-server" class="input" value="https://ntfy.sh" />
             </div>
             <div>
-              <label>ntfy Topic Name (keep unique/secret)</label>
+              <label for="set-ntfy-topic">ntfy Topic Name (keep unique/secret)</label>
               <input type="text" id="set-ntfy-topic" class="input" placeholder="e.g. nikon-refurb-alerts-myname" />
             </div>
             <div>
-              <label>ntfy Access Token (optional)</label>
+              <label for="set-ntfy-token">ntfy Access Token (optional)</label>
               <input type="password" id="set-ntfy-token" class="input" placeholder="Bearer token if using protected topic" />
             </div>
           </div>
@@ -360,7 +402,7 @@
               <span>Enable Discord Rich Webhook Alerts</span>
             </label>
             <div>
-              <label>Discord Webhook URL</label>
+              <label for="set-discord-url">Discord Webhook URL</label>
               <input type="url" id="set-discord-url" class="input" placeholder="https://discord.com/api/webhooks/..." />
             </div>
             <hr class="divider" />
@@ -370,11 +412,11 @@
             </label>
             <div class="form-row">
               <div>
-                <label>Telegram Bot Token</label>
+                <label for="set-telegram-token">Telegram Bot Token</label>
                 <input type="password" id="set-telegram-token" class="input" placeholder="123456:ABC-DEF..." />
               </div>
               <div>
-                <label>Telegram Chat ID</label>
+                <label for="set-telegram-chat">Telegram Chat ID</label>
                 <input type="text" id="set-telegram-chat" class="input" placeholder="e.g. 987654321" />
               </div>
             </div>
@@ -385,11 +427,11 @@
             </label>
             <div class="form-row">
               <div>
-                <label>Pushover User Key</label>
+                <label for="set-pushover-user">Pushover User Key</label>
                 <input type="text" id="set-pushover-user" class="input" />
               </div>
               <div>
-                <label>Pushover API Token</label>
+                <label for="set-pushover-token">Pushover API Token</label>
                 <input type="password" id="set-pushover-token" class="input" />
               </div>
             </div>
@@ -405,19 +447,19 @@
   </main>
 
   <!-- Price & Stock History Modal -->
-  <div id="history-modal" class="modal hidden">
+  <div id="history-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-backdrop" id="modal-close-backdrop"></div>
     <div class="modal-content">
       <div class="modal-header">
         <h3 id="modal-title">Price &amp; Stock History</h3>
-        <button id="btn-close-modal" class="btn-icon">&times;</button>
+        <button id="btn-close-modal" class="btn-icon" aria-label="Close modal">&times;</button>
       </div>
       <div id="modal-body" class="modal-body"></div>
     </div>
   </div>
 
   <!-- Toast Banner -->
-  <div id="ui-toast" class="ui-toast hidden"></div>
+  <div id="ui-toast" class="ui-toast hidden" role="status" aria-live="polite"></div>
 
   <script src="/static/app.js"></script>
 </body>
