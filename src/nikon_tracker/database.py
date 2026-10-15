@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,12 +13,39 @@ from nikon_tracker.models import AlertEvent, TrackerSettings, VariantSnapshot, W
 
 
 def get_default_db_path() -> Path:
-    """Return the default SQLite database path (portable ./data/tracker.db or env override)."""
+    """Return the default SQLite database path (env override, OS app-data when frozen, or ./data/tracker.db)."""
     env_path = os.environ.get("NIKON_TRACKER_DB")
     if env_path:
         p = Path(env_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
+
+    if getattr(sys, "frozen", False):
+        # Support portable mode on Windows if a 'data' folder exists next to the .exe
+        exe_dir = Path(sys.executable).resolve().parent
+        portable_dir = exe_dir / "data"
+        if sys.platform == "win32" and portable_dir.is_dir():
+            return portable_dir / "tracker.db"
+
+        if sys.platform == "win32":
+            appdata = os.environ.get("LOCALAPPDATA")
+            base_dir = (
+                Path(appdata) / "NikonRefurbTracker"
+                if appdata
+                else Path.home() / "AppData" / "Local" / "NikonRefurbTracker"
+            )
+        elif sys.platform == "darwin":
+            base_dir = Path.home() / "Library" / "Application Support" / "NikonRefurbTracker"
+        else:
+            xdg = os.environ.get("XDG_DATA_HOME")
+            base_dir = (
+                Path(xdg) / "NikonRefurbTracker"
+                if xdg
+                else Path.home() / ".local" / "share" / "NikonRefurbTracker"
+            )
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir / "tracker.db"
+
     base_dir = Path.cwd() / "data"
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir / "tracker.db"

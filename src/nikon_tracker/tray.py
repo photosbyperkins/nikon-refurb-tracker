@@ -63,6 +63,18 @@ def run_tray_app(
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
+    dashboard_url = f"http://{host}:{port}"
+
+    # If an instance is already running on this port, open the dashboard in browser and exit cleanly
+    try:
+        with urllib.request.urlopen(f"{dashboard_url}/api/status", timeout=0.8) as resp:
+            if resp.status == 200:
+                if open_browser:
+                    webbrowser.open(dashboard_url)
+                return
+    except Exception:
+        pass
+
     db = TrackerDatabase()
     scheduler = TrackerScheduler(db=db)
     app = create_app(db=db, scheduler=scheduler, start_background_poller=True)
@@ -74,8 +86,6 @@ def run_tray_app(
 
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
-
-    dashboard_url = f"http://{host}:{port}"
 
     if open_browser:
         def _delayed_open() -> None:

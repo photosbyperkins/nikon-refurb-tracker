@@ -34,7 +34,18 @@ When NikonUSA runs a flash refurbished sale (e.g., *"10% Off Select Refurbished 
 
 ## Quick Start (Windows & macOS)
 
-### 1. Install from Source
+### Option A: 1-Click Standalone Download (No Python Required)
+
+Download the latest precompiled executable from the [**GitHub Releases page**](https://github.com/photosbyperkins/nikon-refurb-tracker/releases/latest):
+
+- **Windows (10/11):** Download **`NikonRefurbTracker-Windows.exe`** and double-click to launch. It starts in your Windows system tray (yellow **`N`** icon) and automatically opens the dashboard at `http://127.0.0.1:8470`.
+  - *Note: Because this is a free open-source build without a paid Microsoft certificate, click **More info &rarr; Run anyway** if Windows SmartScreen prompts on first launch.*
+- **macOS (Apple Silicon & Intel):** Download **`NikonRefurbTracker-macOS.zip`**, double-click to unzip **`NikonRefurbTracker.app`**, and move it to Applications.
+  - *Note: On first launch, **Right-click (or Ctrl+click) `NikonRefurbTracker.app` &rarr; Open** (or run `xattr -cr NikonRefurbTracker.app` in Terminal) to bypass macOS Gatekeeper for unsigned open-source apps.*
+
+---
+
+### Option B: Run from Python Source
 
 Requires **Python 3.10+**.
 
@@ -44,7 +55,7 @@ cd nikon-refurb-tracker
 pip install -e ".[dev]"
 ```
 
-### 2. Run a Fast Terminal Scan or Browse the 266-SKU Catalog
+#### Run a Fast Terminal Scan or Browse the 266-SKU Catalog
 
 ```bash
 # Scan all in-stock NikonUSA refurbished items and resolve true New MSRPs:
@@ -61,7 +72,7 @@ nikon-tracker catalog --category "NIKKOR Z"
 nikon-tracker watch 1695Q
 ```
 
-### 3. Launch the System Tray App & Local Web Dashboard
+#### Launch the System Tray App & Local Web Dashboard
 
 ```bash
 nikon-tracker start
@@ -75,18 +86,18 @@ nikon-tracker start
 
 ---
 
-## Building Standalone Executables (Windows `.exe` / macOS `.app`)
+## Building Standalone Executables Locally (Windows `.exe` / macOS `.app`)
 
-You can package the tracker into a single standalone executable using PyInstaller:
+You can also package the tracker locally using PyInstaller:
 
 **Windows (PowerShell):**
 ```powershell
-pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker" --add-data "src/nikon_tracker/web/static;nikon_tracker/web/static" --add-data "src/nikon_tracker/data;nikon_tracker/data" src/nikon_tracker/tray.py
+pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker-Windows" --collect-submodules uvicorn --collect-submodules pystray --add-data "src/nikon_tracker/web/static;nikon_tracker/web/static" --add-data "src/nikon_tracker/data;nikon_tracker/data" src/nikon_tracker/tray.py
 ```
 
 **macOS (Terminal):**
 ```bash
-pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker" --add-data "src/nikon_tracker/web/static:nikon_tracker/web/static" --add-data "src/nikon_tracker/data:nikon_tracker/data" src/nikon_tracker/tray.py
+pyinstaller --noconfirm --windowed --name "NikonRefurbTracker" --collect-submodules uvicorn --collect-submodules pystray --add-data "src/nikon_tracker/web/static:nikon_tracker/web/static" --add-data "src/nikon_tracker/data:nikon_tracker/data" src/nikon_tracker/tray.py
 ```
 
 ---

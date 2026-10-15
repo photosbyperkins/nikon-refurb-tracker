@@ -6,6 +6,10 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   test:
@@ -58,18 +62,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Build Standalone Binary (Windows)
+      - name: Generate App Icon
+        run: |
+          python -c "from nikon_tracker.tray import create_nikon_tray_icon; create_nikon_tray_icon(256).save('app_icon.ico', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
+
+      - name: Build Standalone Binary (Windows .exe)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker-Windows" --add-data "src/nikon_tracker/web/static;nikon_tracker/web/static" --add-data "src/nikon_tracker/data;nikon_tracker/data" src/nikon_tracker/tray.py
+          pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker-Windows" --icon app_icon.ico --collect-submodules uvicorn --collect-submodules pystray --add-data "src/nikon_tracker/web/static;nikon_tracker/web/static" --add-data "src/nikon_tracker/data;nikon_tracker/data" src/nikon_tracker/tray.py
 
-      - name: Build Standalone App (macOS)
+      - name: Build Standalone App Bundle (macOS .app.zip)
         if: matrix.os == 'macos-latest'
         run: |
-          pyinstaller --noconfirm --onefile --windowed --name "NikonRefurbTracker-macOS" --add-data "src/nikon_tracker/web/static:nikon_tracker/web/static" --add-data "src/nikon_tracker/data:nikon_tracker/data" src/nikon_tracker/tray.py
+          pyinstaller --noconfirm --windowed --name "NikonRefurbTracker" --icon app_icon.ico --collect-submodules uvicorn --collect-submodules pystray --add-data "src/nikon_tracker/web/static:nikon_tracker/web/static" --add-data "src/nikon_tracker/data:nikon_tracker/data" src/nikon_tracker/tray.py
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent "NikonRefurbTracker.app" "NikonRefurbTracker-macOS.zip"
+          rm -rf "NikonRefurbTracker" "NikonRefurbTracker.app"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: NikonRefurbTracker-${{ matrix.os }}
           path: dist/*
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Built Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/NikonRefurbTracker-Windows.exe
+            release-assets/NikonRefurbTracker-macOS.zip
+          generate_release_notes: true
+          body: |
+            ### 📥 Zero-Install Downloads (Windows & macOS)
+            - **Windows (10/11):** Download **`NikonRefurbTracker-Windows.exe`** and double-click to launch. It starts in your Windows system tray (`N` icon) and opens the dashboard at `http://127.0.0.1:8470`.
+              - *Note: Because this is a free open-source build without a paid Microsoft certificate, click **More info &rarr; Run anyway** if Windows SmartScreen prompts on first launch.*
+            - **macOS (Apple Silicon & Intel):** Download **`NikonRefurbTracker-macOS.zip`**, double-click to unzip **`NikonRefurbTracker.app`**, and move it to Applications.
+              - *Note: On first launch, **Right-click (or Ctrl+click) `NikonRefurbTracker.app` &rarr; Open** (or run `xattr -cr NikonRefurbTracker.app` in Terminal) to bypass macOS Gatekeeper for unsigned open-source apps.*
