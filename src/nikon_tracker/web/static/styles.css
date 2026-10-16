@@ -961,6 +961,127 @@ body {
   max-width: 440px;
 }
 
+.ui-toast.toast-error {
+  border-left-color: var(--red);
+  background: #27151b;
+  color: #fecaca;
+}
+
+.version-pill {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  background: var(--nikon-yellow-subtle);
+  color: var(--nikon-yellow);
+  border: 1px solid rgba(246, 211, 0, 0.35);
+}
+
+.flash-sale-banner {
+  background: linear-gradient(90deg, rgba(246, 211, 0, 0.14) 0%, rgba(16, 185, 129, 0.12) 100%);
+  border: 1px solid rgba(246, 211, 0, 0.45);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: var(--shadow-card);
+}
+
+.flash-sale-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.flash-sale-badge {
+  background: var(--nikon-yellow);
+  color: #090c12;
+  font-weight: 900;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+}
+
+.badge-atl {
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mount-pill {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.msrp-inline-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.msrp-input {
+  width: 92px;
+  padding: 4px 7px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--nikon-yellow);
+  border-radius: 5px;
+}
+
+.btn-muted {
+  background: var(--amber-bg) !important;
+  color: #fbbf24 !important;
+  border-color: rgba(245, 158, 11, 0.45) !important;
+}
+
+@keyframes rowFlashPulse {
+  0% { background-color: rgba(246, 211, 0, 0.25); }
+  100% { background-color: transparent; }
+}
+
+.deals-table tr.row-just-updated td {
+  animation: rowFlashPulse 2.4s ease-out;
+}
+
+.chart-hud-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-height: 36px;
+}
+
 .hidden {
   display: none !important;
 }

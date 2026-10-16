@@ -1,11 +1,13 @@
-// Frontend controller for NikonUSA Refurbished Tracker
+// Frontend controller for NikonUSA Refurbished Tracker v1.0
 
 let currentStatus = {};
 let allDeals = [];
 let watchlistData = { items: [], presets: [] };
 let watchedSkusSet = new Set();
+let recentlyChangedSkusSet = new Set();
 let lastRenderedPollAt = null;
 let lastFilterSignature = "";
+let activeMsrpEditSku = null;
 
 function debounce(fn, delayMs = 120) {
   let timer = null;
@@ -15,13 +17,14 @@ function debounce(fn, delayMs = 120) {
   };
 }
 
-function showToast(msg) {
+function showToast(msg, type = "info") {
   const el = document.getElementById("ui-toast");
   if (!el) return;
   el.textContent = msg;
+  el.classList.toggle("toast-error", type === "error");
   el.classList.remove("hidden");
   clearTimeout(window._toastTimer);
-  window._toastTimer = setTimeout(() => el.classList.add("hidden"), 4000);
+  window._toastTimer = setTimeout(() => el.classList.add("hidden"), 4200);
 }
 
 function fmtCurrency(val) {
@@ -80,7 +83,9 @@ function syncActiveFilterHighlights() {
   const sub50Only = document.getElementById("filter-sub50")?.checked || false;
   const inStockOnly = document.getElementById("filter-instock")?.checked || false;
   const extraSaleOnly = document.getElementById("filter-extrasale")?.checked || false;
+  const atlOnly = document.getElementById("filter-atl")?.checked || false;
   const category = document.getElementById("filter-category")?.value || "ALL";
+  const mount = document.getElementById("filter-mount")?.value || "ALL";
   const q = (document.getElementById("filter-search")?.value || "").trim();
   const sortBy = document.getElementById("filter-sort")?.value || "discount_desc";
 
@@ -105,7 +110,9 @@ function syncActiveFilterHighlights() {
   const isNonDefault =
     q !== "" ||
     category !== "ALL" ||
+    mount !== "ALL" ||
     sub50Only !== false ||
+    atlOnly !== false ||
     inStockOnly !== true ||
     extraSaleOnly !== false ||
     sortBy !== "discount_desc";
@@ -116,73 +123,134 @@ function syncActiveFilterHighlights() {
   }
 }
 
+function updatePollerStatusPillText() {
+  const dot = document.getElementById("status-dot");
+  const text = document.getElementById("status-text");
+  const pauseBtn = document.getElementById("btn-pause-resume");
+  if (!dot || !text || !pauseBtn) return;
+
+  dot.className = "status-dot";
+  if (currentStatus.is_polling_now) {
+    dot.classList.add("polling");
+    text.textContent = "Scanning NikonUSA...";
+  } else if (currentStatus.is_paused) {
+    dot.classList.add("paused");
+    text.textContent = "Paused";
+    pauseBtn.textContent = "▶ Resume";
+  } else {
+    pauseBtn.textContent = "⏸ Pause";
+    let nextStr = `Every ${currentStatus.poll_interval_seconds || 60}s`;
+    if (currentStatus.next_poll_at) {
+      const remSec = Math.max(0, Math.round((new Date(currentStatus.next_poll_at).getTime() - Date.now()) / 1000));
+      nextStr = `Next in ${remSec}s`;
+    }
+    text.textContent = `${nextStr} • ${fmtRelativeTime(currentStatus.last_poll_at)}`;
+  }
+}
+
+function applyStatus(statusData) {
+  if (!statusData || typeof statusData !== "object") return;
+  currentStatus = statusData;
+
+  const threshEl = document.getElementById("kpi-threshold-label");
+  if (threshEl) threshEl.textContent = Math.round(currentStatus.global_discount_threshold_pct || 50);
+
+  document.getElementById("kpi-sub50-count").textContent = currentStatus.sub_50_msrp_count ?? 0;
+  document.getElementById("kpi-instock-count").textContent = currentStatus.in_stock_count ?? 0;
+  document.getElementById("kpi-total-skus").textContent = `/ ${currentStatus.total_tracked_skus ?? 0} SKUs`;
+  document.getElementById("kpi-extrasale-count").textContent = currentStatus.extra_sale_count ?? 0;
+
+  const atlSummary = document.getElementById("kpi-atl-summary");
+  if (atlSummary) {
+    atlSummary.textContent = currentStatus.atl_count > 0 ? `• ${currentStatus.atl_count} at ATL` : "";
+  }
+
+  const dealsBadge = document.getElementById("tab-badge-deals");
+  if (dealsBadge) dealsBadge.textContent = currentStatus.in_stock_count ?? 0;
+
+  const lastPollStr = currentStatus.last_poll_at
+    ? `Last poll: ${fmtRelativeTime(currentStatus.last_poll_at)} (${currentStatus.last_poll_duration_ms || 0}ms)`
+    : "Scanning NikonUSA...";
+  document.getElementById("kpi-last-poll").textContent = lastPollStr;
+
+  // Mute button state
+  const muteBtn = document.getElementById("btn-mute-desktop");
+  if (muteBtn) {
+    const isMuted = !!currentStatus.mute_desktop;
+    muteBtn.textContent = isMuted ? "🔕 Muted" : "🔔 Alerts On";
+    muteBtn.classList.toggle("btn-muted", isMuted);
+  }
+
+  // Flash sale event banner
+  const flashBanner = document.getElementById("flash-sale-banner");
+  const flashText = document.getElementById("flash-sale-text");
+  if (flashBanner && flashText) {
+    if (currentStatus.flash_sale_active && currentStatus.extra_sale_count >= 3) {
+      flashText.innerHTML = `<strong>NikonUSA Refurbished Flash Sale Active!</strong> ${currentStatus.extra_sale_count} in-stock items have extra promotional markdowns right now (up to <strong>${currentStatus.max_extra_sale_pct || 10}% extra off</strong> regular refurb price).`;
+      flashBanner.classList.remove("hidden");
+    } else {
+      flashBanner.classList.add("hidden");
+    }
+  }
+
+  // Error banner handling
+  const errBanner = document.getElementById("error-banner");
+  const errText = document.getElementById("error-banner-text");
+  if (errBanner && errText) {
+    if (currentStatus.last_error) {
+      errText.textContent = `⚠️ Last NikonUSA poll encountered an error: ${currentStatus.last_error}`;
+      errBanner.classList.remove("hidden");
+    } else {
+      errBanner.classList.add("hidden");
+    }
+  }
+
+  updatePollerStatusPillText();
+}
+
 // --- Status & Deals Loading ---
 async function loadStatus() {
   try {
     const res = await fetch("/api/status");
-    currentStatus = await res.json();
-
-    document.getElementById("kpi-threshold-label").textContent = Math.round(
-      currentStatus.global_discount_threshold_pct || 50
-    );
-    document.getElementById("kpi-sub50-count").textContent = currentStatus.sub_50_msrp_count ?? 0;
-    document.getElementById("kpi-instock-count").textContent = currentStatus.in_stock_count ?? 0;
-    document.getElementById("kpi-total-skus").textContent = `/ ${currentStatus.total_tracked_skus ?? 0} SKUs`;
-    document.getElementById("kpi-extrasale-count").textContent = currentStatus.extra_sale_count ?? 0;
-
-    const dealsBadge = document.getElementById("tab-badge-deals");
-    if (dealsBadge) dealsBadge.textContent = currentStatus.in_stock_count ?? 0;
-
-    const lastPollStr = currentStatus.last_poll_at
-      ? `Last poll: ${fmtRelativeTime(currentStatus.last_poll_at)} (${currentStatus.last_poll_duration_ms || 0}ms)`
-      : "Scanning NikonUSA...";
-    document.getElementById("kpi-last-poll").textContent = lastPollStr;
-
-    // Error banner handling
-    const errBanner = document.getElementById("error-banner");
-    const errText = document.getElementById("error-banner-text");
-    if (errBanner && errText) {
-      if (currentStatus.last_error) {
-        errText.textContent = `⚠️ Last NikonUSA poll encountered an error: ${currentStatus.last_error}`;
-        errBanner.classList.remove("hidden");
-      } else {
-        errBanner.classList.add("hidden");
-      }
-    }
-
-    const dot = document.getElementById("status-dot");
-    const text = document.getElementById("status-text");
-    const pauseBtn = document.getElementById("btn-pause-resume");
-
-    dot.className = "status-dot";
-    if (currentStatus.is_polling_now) {
-      dot.classList.add("polling");
-      text.textContent = "Scanning NikonUSA...";
-    } else if (currentStatus.is_paused) {
-      dot.classList.add("paused");
-      text.textContent = "Paused";
-      pauseBtn.textContent = "▶ Resume";
-    } else {
-      text.textContent = `Every ${currentStatus.poll_interval_seconds || 60}s • ${fmtRelativeTime(currentStatus.last_poll_at)}`;
-      pauseBtn.textContent = "⏸ Pause";
-    }
+    const data = await res.json();
+    applyStatus(data);
   } catch (err) {
     console.error("Failed to fetch status:", err);
   }
 }
 
-function getFilterSignature() {
+function getFilterQueryParams() {
   const q = document.getElementById("filter-search")?.value.trim() || "";
   const category = document.getElementById("filter-category")?.value || "ALL";
+  const mount = document.getElementById("filter-mount")?.value || "ALL";
   const sortBy = document.getElementById("filter-sort")?.value || "discount_desc";
   const sub50Only = document.getElementById("filter-sub50")?.checked || false;
+  const atlOnly = document.getElementById("filter-atl")?.checked || false;
   const inStockOnly = document.getElementById("filter-instock")?.checked || false;
   const extraSaleOnly = document.getElementById("filter-extrasale")?.checked || false;
-  return JSON.stringify({ q, category, sortBy, sub50Only, inStockOnly, extraSaleOnly });
+
+  const params = new URLSearchParams({
+    sub_50_only: sub50Only,
+    atl_only: atlOnly,
+    in_stock_only: inStockOnly,
+    extra_sale_only: extraSaleOnly,
+    category: category,
+    mount: mount,
+    sort_by: sortBy,
+  });
+  if (q) params.set("q", q);
+  return params;
+}
+
+function getFilterSignature() {
+  return getFilterQueryParams().toString();
 }
 
 async function loadDeals(force = false) {
   syncActiveFilterHighlights();
+  if (activeMsrpEditSku && !force) {
+    return;
+  }
 
   const sig = getFilterSignature();
   const pollStamp = currentStatus.last_poll_at || "";
@@ -190,21 +258,7 @@ async function loadDeals(force = false) {
     return;
   }
 
-  const q = document.getElementById("filter-search").value.trim();
-  const category = document.getElementById("filter-category").value;
-  const sortBy = document.getElementById("filter-sort").value;
-  const sub50Only = document.getElementById("filter-sub50").checked;
-  const inStockOnly = document.getElementById("filter-instock").checked;
-  const extraSaleOnly = document.getElementById("filter-extrasale").checked;
-
-  const params = new URLSearchParams({
-    sub_50_only: sub50Only,
-    in_stock_only: inStockOnly,
-    extra_sale_only: extraSaleOnly,
-    category: category,
-    sort_by: sortBy,
-  });
-  if (q) params.set("q", q);
+  const params = getFilterQueryParams();
 
   try {
     const res = await fetch(`/api/deals?${params.toString()}`);
@@ -215,7 +269,7 @@ async function loadDeals(force = false) {
 
     // Populate/update category dropdown while preserving current selection
     const catSelect = document.getElementById("filter-category");
-    if (Array.isArray(data.categories)) {
+    if (catSelect && Array.isArray(data.categories)) {
       const existingCats = new Set(Array.from(catSelect.options).map((o) => o.value));
       data.categories.forEach((cat) => {
         if (!existingCats.has(cat)) {
@@ -246,7 +300,7 @@ function renderDealsTable(items, thresholdPct) {
       <tr>
         <td colspan="6" class="empty-cell">
           No refurbished items match your current filters.
-          Try clicking <strong>↺ Reset Filters</strong>, unchecking <strong>✅ In Stock Only</strong>, or clicking <strong>📥 Load All 266 OOS &amp; Refurb SKUs</strong>.
+          Try clicking <strong>↺ Reset Filters</strong>, unchecking <strong>✅ In Stock Only</strong>, or clicking <strong>📥 Load All 266 SKUs</strong>.
         </td>
       </tr>`;
     return;
@@ -257,7 +311,12 @@ function renderDealsTable(items, thresholdPct) {
       const skuUpper = String(item.sku || "").toUpperCase();
       const isWatched = watchedSkusSet.has(skuUpper);
       const isHot = item.discount_pct_vs_msrp !== null && item.discount_pct_vs_msrp >= thresholdPct;
-      const rowClass = isHot && item.is_on_stock ? "row-sub50" : !item.is_on_stock ? "row-oos" : "";
+      const isChanged = recentlyChangedSkusSet.has(skuUpper);
+      const classes = [];
+      if (isHot && item.is_on_stock) classes.push("row-sub50");
+      else if (!item.is_on_stock) classes.push("row-oos");
+      if (isChanged) classes.push("row-just-updated");
+      const rowClass = classes.join(" ");
 
       let stockBadge = `<span class="badge badge-oos">Out of Stock</span>`;
       if (item.is_on_stock) {
@@ -295,9 +354,18 @@ function renderDealsTable(items, thresholdPct) {
           ? `<div class="price-strike">Reg Refurb: ${fmtCurrency(item.refurb_reg_dollars)} (-${item.discount_pct_vs_refurb_reg}%)</div>`
           : "";
 
-      const promoHtml = item.promo_message
-        ? `<div class="promo-pill">🏷️ ${escapeHtml(item.promo_message)}</div>`
-        : "";
+      const atlBadge =
+        item.is_all_time_low && item.is_on_stock
+          ? `<span class="badge-atl" title="Lowest price ever recorded for this SKU">🏆 All-Time Low</span>`
+          : "";
+
+      const promoHtml =
+        item.promo_message || atlBadge
+          ? `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+               ${atlBadge}
+               ${item.promo_message ? `<span class="promo-pill" style="margin-top:0;">🏷️ ${escapeHtml(item.promo_message)}</span>` : ""}
+             </div>`
+          : "";
 
       const msrpSourceLabels = {
         new_catalog: "Official New SKU " + item.new_sku,
@@ -336,7 +404,7 @@ function renderDealsTable(items, thresholdPct) {
         : `<button class="btn btn-secondary btn-sm" title="Add to Watchlist for instant restock & price alerts" onclick="quickWatchSku('${escapeJsAttr(item.sku)}', '${escapeJsAttr(item.slug)}', '${escapeJsAttr(item.product_key)}', '${escapeJsAttr(item.name)}')">🎯 Watch</button>`;
 
       return `
-        <tr class="${rowClass}">
+        <tr class="${rowClass}" data-sku="${escapeHtml(skuUpper)}">
           <td>
             <div class="product-cell">
               ${thumb}
@@ -346,6 +414,7 @@ function renderDealsTable(items, thresholdPct) {
                 </a>
                 <div class="product-meta">
                   <span class="sku-pill">${escapeHtml(item.sku)}</span>
+                  ${item.mount_system ? `<span class="mount-pill">${escapeHtml(item.mount_system)}</span>` : ""}
                   <span>${escapeHtml(item.category)}</span>
                   ${item.lowest_seen_cents ? `<span>• Low: ${fmtCurrency(item.lowest_seen_cents / 100)}</span>` : ""}
                 </div>
@@ -358,10 +427,10 @@ function renderDealsTable(items, thresholdPct) {
             <div class="price-main">${fmtCurrency(item.effective_price_dollars)}</div>
             ${regStrike}
           </td>
-          <td>
+          <td id="msrp-cell-${escapeHtml(skuUpper)}">
             <div class="price-msrp">
-              ${fmtCurrency(item.msrp_dollars)}
-              <button class="btn-icon" style="font-size:12px;" title="Edit MSRP manually" onclick="promptManualMsrp('${escapeJsAttr(item.sku)}', ${item.msrp_dollars || 0})">✏️</button>
+              <span>${fmtCurrency(item.msrp_dollars)}</span>
+              <button type="button" class="btn-icon" style="font-size:12px;" title="Edit MSRP inline" onclick="openInlineMsrpEditor('${escapeJsAttr(skuUpper)}', ${item.msrp_dollars || 0})">✏️</button>
             </div>
             <div class="product-meta">${escapeHtml(sourceLabel)}</div>
           </td>
@@ -379,21 +448,63 @@ function renderDealsTable(items, thresholdPct) {
     .join("");
 }
 
-// --- Manual MSRP Override ---
-async function promptManualMsrp(sku, currentMsrp) {
-  const input = prompt(`Enter official Brand-New MSRP ($ USD) for SKU ${sku}:`, currentMsrp || "");
-  if (!input) return;
-  const val = parseFloat(input);
+// --- Inline Manual MSRP Popover Editor (No window.prompt / window.alert) ---
+function openInlineMsrpEditor(sku, currentMsrp) {
+  const skuUpper = String(sku || "").toUpperCase();
+  const cell = document.getElementById(`msrp-cell-${skuUpper}`);
+  if (!cell) return;
+  activeMsrpEditSku = skuUpper;
+  const initVal = currentMsrp && Number(currentMsrp) > 0 ? Number(currentMsrp).toFixed(2) : "";
+
+  cell.innerHTML = `
+    <div class="msrp-inline-editor">
+      <input type="number" step="0.01" min="1" class="msrp-input" id="msrp-input-${escapeHtml(skuUpper)}" value="${escapeHtml(initVal)}" placeholder="MSRP $" aria-label="Edit MSRP for ${escapeHtml(skuUpper)}" />
+      <button type="button" class="btn btn-primary btn-sm" style="padding:3px 7px;" title="Save MSRP (Enter)" onclick="saveInlineMsrp('${escapeJsAttr(skuUpper)}')">✓</button>
+      <button type="button" class="btn btn-secondary btn-sm" style="padding:3px 7px;" title="Cancel (Escape)" onclick="cancelInlineMsrp()">✕</button>
+    </div>
+    <div class="product-meta">Press Enter to save</div>
+  `;
+
+  const inputEl = document.getElementById(`msrp-input-${skuUpper}`);
+  if (inputEl) {
+    inputEl.focus();
+    inputEl.select();
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveInlineMsrp(skuUpper);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancelInlineMsrp();
+      }
+    });
+  }
+}
+
+function cancelInlineMsrp() {
+  activeMsrpEditSku = null;
+  loadDeals(true);
+}
+
+async function saveInlineMsrp(sku) {
+  const skuUpper = String(sku || "").toUpperCase();
+  const inputEl = document.getElementById(`msrp-input-${skuUpper}`);
+  const val = inputEl ? parseFloat(inputEl.value) : NaN;
   if (isNaN(val) || val <= 0) {
-    alert("Please enter a valid positive dollar amount.");
+    showToast("Please enter a valid positive dollar amount for MSRP.", "error");
     return;
   }
-  await fetch(`/api/deals/${encodeURIComponent(sku)}/msrp`, {
+  activeMsrpEditSku = null;
+  const res = await fetch(`/api/deals/${encodeURIComponent(skuUpper)}/msrp`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ msrp_dollars: val }),
   });
-  showToast(`Updated MSRP for ${sku} to ${fmtCurrency(val)}`);
+  if (!res.ok) {
+    showToast(`Failed to update MSRP for ${skuUpper}`, "error");
+    return;
+  }
+  showToast(`Updated MSRP for ${skuUpper} to ${fmtCurrency(val)}`);
   await loadStatus();
   await loadDeals(true);
 }
@@ -448,6 +559,7 @@ async function loadWatchlist() {
       if (entry.max_price_dollars) rules.push(`&le; ${fmtCurrency(entry.max_price_dollars)}`);
       if (entry.min_discount_pct_msrp) rules.push(`&ge; ${entry.min_discount_pct_msrp}% off MSRP`);
       if (entry.notify_on_restock) rules.push("Restock Alert");
+      if (entry.notify_on_price_drop !== false) rules.push("Price Drop Alert");
       if (entry.auto_open_browser) rules.push("Auto-Open URL");
 
       const prodUrl = live
@@ -490,6 +602,8 @@ function editWatchlistRule(sku) {
   document.getElementById("wl-max-price").value = entry.max_price_dollars ?? "";
   document.getElementById("wl-min-discount").value = entry.min_discount_pct_msrp ?? 50;
   document.getElementById("wl-restock").checked = !!entry.notify_on_restock;
+  const priceDropEl = document.getElementById("wl-price-drop");
+  if (priceDropEl) priceDropEl.checked = entry.notify_on_price_drop !== false;
   document.getElementById("wl-auto-open").checked = !!entry.auto_open_browser;
 
   const titleEl = document.getElementById("wl-form-title");
@@ -510,6 +624,8 @@ function resetWatchlistForm() {
   document.getElementById("wl-max-price").value = "";
   document.getElementById("wl-min-discount").value = "50";
   document.getElementById("wl-restock").checked = true;
+  const priceDropEl = document.getElementById("wl-price-drop");
+  if (priceDropEl) priceDropEl.checked = true;
   document.getElementById("wl-auto-open").checked = false;
 
   const titleEl = document.getElementById("wl-form-title");
@@ -651,6 +767,7 @@ async function addPresetToWatchlist(sku, slug, productKey, label) {
       label,
       min_discount_pct_msrp: 50.0,
       notify_on_restock: true,
+      notify_on_price_drop: true,
       auto_open_browser: false,
     }),
   });
@@ -678,6 +795,8 @@ document.getElementById("watchlist-form").addEventListener("submit", async (e) =
   const maxPriceRaw = document.getElementById("wl-max-price").value;
   const minDiscRaw = document.getElementById("wl-min-discount").value;
   const restock = document.getElementById("wl-restock").checked;
+  const priceDropEl = document.getElementById("wl-price-drop");
+  const priceDrop = priceDropEl ? priceDropEl.checked : true;
   const autoOpen = document.getElementById("wl-auto-open").checked;
 
   const res = await fetch("/api/watchlist", {
@@ -689,13 +808,18 @@ document.getElementById("watchlist-form").addEventListener("submit", async (e) =
       max_price_dollars: maxPriceRaw ? parseFloat(maxPriceRaw) : null,
       min_discount_pct_msrp: minDiscRaw ? parseFloat(minDiscRaw) : 50.0,
       notify_on_restock: restock,
+      notify_on_price_drop: priceDrop,
       auto_open_browser: autoOpen,
     }),
   });
 
   if (!res.ok) {
-    const err = await res.json();
-    alert(err.detail || "Could not add watchlist entry");
+    let detail = "Could not add watchlist entry";
+    try {
+      const err = await res.json();
+      if (err.detail) detail = err.detail;
+    } catch (_) {}
+    showToast(detail, "error");
     return;
   }
 
@@ -745,7 +869,31 @@ async function loadAlerts() {
     .join("");
 }
 
-// --- Settings ---
+// --- Settings, Per-Channel Test & Backup/Restore ---
+function getSettingsFormPayload() {
+  return {
+    poll_interval_seconds: parseInt(document.getElementById("set-poll-interval").value, 10) || 60,
+    global_discount_threshold_pct: parseFloat(document.getElementById("set-discount-threshold").value) || 50.0,
+    alert_cooldown_minutes: parseInt(document.getElementById("set-cooldown").value, 10) || 360,
+    alert_on_any_extra_refurb_sale: document.getElementById("set-extra-sale-alert").checked,
+    desktop_notifications_enabled: document.getElementById("set-desktop-enabled").checked,
+    desktop_sound_enabled: document.getElementById("set-desktop-sound").checked,
+    auto_open_browser_on_sub50: document.getElementById("set-auto-open-sub50").checked,
+    ntfy_enabled: document.getElementById("set-ntfy-enabled").checked,
+    ntfy_server_url: document.getElementById("set-ntfy-server").value.trim() || "https://ntfy.sh",
+    ntfy_topic: document.getElementById("set-ntfy-topic").value.trim(),
+    ntfy_token: document.getElementById("set-ntfy-token").value.trim(),
+    discord_enabled: document.getElementById("set-discord-enabled").checked,
+    discord_webhook_url: document.getElementById("set-discord-url").value.trim(),
+    telegram_enabled: document.getElementById("set-telegram-enabled").checked,
+    telegram_bot_token: document.getElementById("set-telegram-token").value.trim(),
+    telegram_chat_id: document.getElementById("set-telegram-chat").value.trim(),
+    pushover_enabled: document.getElementById("set-pushover-enabled").checked,
+    pushover_user_key: document.getElementById("set-pushover-user").value.trim(),
+    pushover_api_token: document.getElementById("set-pushover-token").value.trim(),
+  };
+}
+
 async function loadSettings() {
   const res = await fetch("/api/settings");
   const s = await res.json();
@@ -777,27 +925,7 @@ async function loadSettings() {
 
 document.getElementById("settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const payload = {
-    poll_interval_seconds: parseInt(document.getElementById("set-poll-interval").value, 10) || 60,
-    global_discount_threshold_pct: parseFloat(document.getElementById("set-discount-threshold").value) || 50.0,
-    alert_cooldown_minutes: parseInt(document.getElementById("set-cooldown").value, 10) || 360,
-    alert_on_any_extra_refurb_sale: document.getElementById("set-extra-sale-alert").checked,
-    desktop_notifications_enabled: document.getElementById("set-desktop-enabled").checked,
-    desktop_sound_enabled: document.getElementById("set-desktop-sound").checked,
-    auto_open_browser_on_sub50: document.getElementById("set-auto-open-sub50").checked,
-    ntfy_enabled: document.getElementById("set-ntfy-enabled").checked,
-    ntfy_server_url: document.getElementById("set-ntfy-server").value.trim() || "https://ntfy.sh",
-    ntfy_topic: document.getElementById("set-ntfy-topic").value.trim(),
-    ntfy_token: document.getElementById("set-ntfy-token").value.trim(),
-    discord_enabled: document.getElementById("set-discord-enabled").checked,
-    discord_webhook_url: document.getElementById("set-discord-url").value.trim(),
-    telegram_enabled: document.getElementById("set-telegram-enabled").checked,
-    telegram_bot_token: document.getElementById("set-telegram-token").value.trim(),
-    telegram_chat_id: document.getElementById("set-telegram-chat").value.trim(),
-    pushover_enabled: document.getElementById("set-pushover-enabled").checked,
-    pushover_user_key: document.getElementById("set-pushover-user").value.trim(),
-    pushover_api_token: document.getElementById("set-pushover-token").value.trim(),
-  };
+  const payload = getSettingsFormPayload();
 
   await fetch("/api/settings", {
     method: "PUT",
@@ -815,6 +943,88 @@ document.getElementById("settings-form").addEventListener("submit", async (e) =>
   showToast("Settings saved!");
   await loadStatus();
   await loadDeals(true);
+});
+
+document.querySelectorAll(".btn-test-channel").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const ch = btn.getAttribute("data-channel") || "";
+    if (!ch) return;
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "⏳ Testing...";
+    try {
+      const res = await fetch(`/api/test-alert?channel=${encodeURIComponent(ch)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(getSettingsFormPayload()),
+      });
+      if (!res.ok) {
+        let errDetail = `Channel test failed (${res.status})`;
+        try {
+          const err = await res.json();
+          if (err.detail) errDetail = err.detail;
+        } catch (_) {}
+        showToast(errDetail, "error");
+        return;
+      }
+      const data = await res.json();
+      const sent = data.channels_sent || [];
+      if (sent.length > 0) {
+        showToast(`✅ Test alert delivered via ${sent.join(", ")}!`);
+      } else {
+        showToast(`⚠️ Channel '${ch}' did not dispatch — check credentials/fields above.`, "warning");
+      }
+      await loadAlerts();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  });
+});
+
+document.getElementById("btn-export-backup")?.addEventListener("click", () => {
+  showToast("Downloading JSON configuration backup...");
+  window.location.href = "/api/backup";
+});
+
+document.getElementById("input-import-backup")?.addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      showToast("Invalid JSON backup file.", "error");
+      return;
+    }
+    const res = await fetch("/api/backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed),
+    });
+    if (!res.ok) {
+      let detail = "Failed to import backup";
+      try {
+        const err = await res.json();
+        if (err.detail) detail = err.detail;
+      } catch (_) {}
+      showToast(detail, "error");
+      return;
+    }
+    const summary = await res.json();
+    showToast(
+      `Restored ${summary.watchlist_restored || 0} watchlist rules, ${summary.settings_restored || 0} settings, and ${summary.manual_msrps_restored || 0} MSRP overrides!`
+    );
+    await loadStatus();
+    await loadSettings();
+    await loadWatchlist();
+    await loadDeals(true);
+    await loadAlerts();
+  } finally {
+    e.target.value = "";
+  }
 });
 
 // --- History Modal (Day-by-Day Price & Stock Velocity Rollup) ---
@@ -898,6 +1108,7 @@ function renderHistoryModalContent() {
     : "";
 
   let chartSvg = "";
+  let chartPointMeta = [];
   if (daily.length >= 1) {
     const prices = daily.map((d) => d.effective_price_dollars);
     const qtys = daily.map((d) => d.close_quantity ?? d.available_quantity ?? 0);
@@ -921,6 +1132,7 @@ function renderHistoryModalContent() {
     const coords = daily.map((d, idx) => {
       const x = getX(idx);
       const y = priceToY(d.effective_price_dollars);
+      chartPointMeta.push({ x, y, d });
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
 
@@ -963,9 +1175,13 @@ function renderHistoryModalContent() {
       .join("");
 
     chartSvg = `
-      <svg viewBox="0 0 ${w} ${h}" style="width:100%; background:#0b0e14; border:1px solid var(--border); border-radius:8px; margin-bottom:12px;">
+      <div class="chart-hud-bar" id="chart-hud-bar">
+        <span>🖱️ Hover over the chart to inspect daily price, stock level, and unit burn velocity</span>
+      </div>
+      <svg id="history-chart-svg" viewBox="0 0 ${w} ${h}" style="width:100%; background:#0b0e14; border:1px solid var(--border); border-radius:8px; margin-bottom:12px; cursor:crosshair;">
         <text x="26" y="15" fill="#94a3b8" font-size="10" font-weight="700">DAILY REFURB PRICE ($ USD)</text>
         ${targetLineSvg}
+        <line id="svg-crosshair-line" x1="0" y1="16" x2="0" y2="${h - 14}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" visibility="hidden" />
         <polyline fill="none" stroke="#f6d300" stroke-width="2.5" points="${coords.join(" ")}" />
         ${coords
           .map((c, idx) => {
@@ -974,6 +1190,7 @@ function renderHistoryModalContent() {
             return `<circle cx="${cx}" cy="${cy}" r="4" fill="#f6d300"><title>${d.date}: ${fmtCurrency(d.effective_price_dollars)}</title></circle>`;
           })
           .join("")}
+        <circle id="svg-crosshair-dot" cx="0" cy="0" r="6.5" fill="#f6d300" stroke="#0b0e14" stroke-width="2" visibility="hidden" />
         <line x1="20" y1="130" x2="${w - 20}" y2="130" stroke="#1e293b" stroke-width="1" />
         <text x="26" y="144" fill="#94a3b8" font-size="10" font-weight="700">DAILY WAREHOUSE STOCK QTY &amp; BURN VELOCITY</text>
         ${stockBarsSvg}
@@ -1115,6 +1332,54 @@ function renderHistoryModalContent() {
     ${toggleBarHtml}
     ${tableHtml}
   `;
+
+  // Bind interactive SVG crosshair hover readout
+  const svgEl = document.getElementById("history-chart-svg");
+  const hudEl = document.getElementById("chart-hud-bar");
+  const chLine = document.getElementById("svg-crosshair-line");
+  const chDot = document.getElementById("svg-crosshair-dot");
+  if (svgEl && hudEl && chLine && chDot && chartPointMeta.length > 0) {
+    svgEl.addEventListener("mousemove", (evt) => {
+      const rect = svgEl.getBoundingClientRect();
+      if (!rect.width) return;
+      const svgX = ((evt.clientX - rect.left) / rect.width) * 720;
+      let nearest = chartPointMeta[0];
+      let minDist = Math.abs(svgX - nearest.x);
+      for (let i = 1; i < chartPointMeta.length; i++) {
+        const dist = Math.abs(svgX - chartPointMeta[i].x);
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = chartPointMeta[i];
+        }
+      }
+      chLine.setAttribute("x1", nearest.x.toFixed(1));
+      chLine.setAttribute("x2", nearest.x.toFixed(1));
+      chLine.setAttribute("visibility", "visible");
+      chDot.setAttribute("cx", nearest.x.toFixed(1));
+      chDot.setAttribute("cy", nearest.y.toFixed(1));
+      chDot.setAttribute("visibility", "visible");
+
+      const d = nearest.d;
+      const openQ = d.open_quantity ?? d.close_quantity ?? 0;
+      const closeQ = d.close_quantity ?? d.available_quantity ?? 0;
+      const discText =
+        d.msrp_dollars && d.msrp_dollars > d.effective_price_dollars
+          ? ` (-${(((d.msrp_dollars - d.effective_price_dollars) / d.msrp_dollars) * 100).toFixed(1)}% vs MSRP)`
+          : "";
+      hudEl.innerHTML = `
+        <span>📅 <strong>${escapeHtml(d.date)}</strong></span>
+        <span>💰 Price: <strong style="color:var(--nikon-yellow);">${fmtCurrency(d.effective_price_dollars)}</strong>${escapeHtml(discText)}</span>
+        <span>📦 Stock: <strong>${openQ} &rarr; ${closeQ}</strong></span>
+        <span>📉 Sold: <strong>${d.units_sold_est || 0}</strong> • 📈 Restocked: <strong>+${d.units_restocked || 0}</strong></span>
+      `;
+    });
+
+    svgEl.addEventListener("mouseleave", () => {
+      chLine.setAttribute("visibility", "hidden");
+      chDot.setAttribute("visibility", "hidden");
+      hudEl.innerHTML = `<span>🖱️ Hover over the chart to inspect daily price, stock level, and unit burn velocity</span>`;
+    });
+  }
 }
 
 function closeHistoryModal() {
@@ -1132,6 +1397,10 @@ async function triggerManualCheck() {
   try {
     const res = await fetch("/api/check-now", { method: "POST" });
     const data = await res.json();
+    if (Array.isArray(data.changed_skus)) {
+      data.changed_skus.forEach((s) => recentlyChangedSkusSet.add(String(s).toUpperCase()));
+      setTimeout(() => recentlyChangedSkusSet.clear(), 8000);
+    }
     showToast(
       `Scan complete! Updated ${data.updated_count} SKUs (${(data.triggered_alerts || []).length} new alerts).`
     );
@@ -1152,6 +1421,33 @@ document.getElementById("btn-pause-resume").addEventListener("click", async () =
   await loadStatus();
 });
 
+document.getElementById("btn-mute-desktop")?.addEventListener("click", async () => {
+  const nextMuted = !currentStatus.mute_desktop;
+  const res = await fetch("/api/mute-desktop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ muted: nextMuted }),
+  });
+  if (res.ok) {
+    const st = await res.json();
+    applyStatus(st);
+    showToast(nextMuted ? "🔕 Desktop toast & chime notifications muted." : "🔔 Desktop toast & chime notifications unmuted.");
+  }
+});
+
+document.getElementById("btn-filter-flash-sale")?.addEventListener("click", () => {
+  switchToTab("deals");
+  const cb = document.getElementById("filter-extrasale");
+  if (cb) cb.checked = true;
+  loadDeals(true);
+});
+
+document.getElementById("btn-export-csv")?.addEventListener("click", () => {
+  const params = getFilterQueryParams();
+  showToast("Downloading filtered deals CSV...");
+  window.location.href = `/api/deals/export.csv?${params.toString()}`;
+});
+
 document.getElementById("btn-test-alert").addEventListener("click", async () => {
   showToast("Sending test alert...");
   const res = await fetch("/api/test-alert", { method: "POST" });
@@ -1166,7 +1462,15 @@ document.getElementById("btn-refresh-alerts").addEventListener("click", loadAler
 const debouncedLoadDeals = debounce(() => loadDeals(true), 120);
 document.getElementById("filter-search").addEventListener("input", debouncedLoadDeals);
 
-["filter-category", "filter-sort", "filter-sub50", "filter-instock", "filter-extrasale"].forEach((id) => {
+[
+  "filter-category",
+  "filter-mount",
+  "filter-sort",
+  "filter-sub50",
+  "filter-instock",
+  "filter-extrasale",
+  "filter-atl",
+].forEach((id) => {
   const el = document.getElementById(id);
   if (el) {
     el.addEventListener("change", () => loadDeals(true));
@@ -1214,10 +1518,14 @@ document.querySelectorAll("#live-deals-table th.sortable").forEach((th) => {
 document.getElementById("btn-reset-filters")?.addEventListener("click", () => {
   document.getElementById("filter-search").value = "";
   document.getElementById("filter-category").value = "ALL";
+  const mountEl = document.getElementById("filter-mount");
+  if (mountEl) mountEl.value = "ALL";
   document.getElementById("filter-sort").value = "discount_desc";
   document.getElementById("filter-sub50").checked = false;
   document.getElementById("filter-instock").checked = true;
   document.getElementById("filter-extrasale").checked = false;
+  const atlEl = document.getElementById("filter-atl");
+  if (atlEl) atlEl.checked = false;
   loadDeals(true);
 });
 
@@ -1263,6 +1571,10 @@ bindKpiCardAction("kpi-watchlist-card", () => {
 document.addEventListener("keydown", (e) => {
   const modal = document.getElementById("history-modal");
   if (e.key === "Escape") {
+    if (activeMsrpEditSku) {
+      cancelInlineMsrpEditor();
+      return;
+    }
     if (modal && !modal.classList.contains("hidden")) {
       closeHistoryModal();
       return;
@@ -1291,16 +1603,73 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Initial boot & smart zero-flicker auto-refresh
+// --- Real-Time SSE Event Stream & Countdown Ticker ---
+let _eventSource = null;
+
+function connectEventStream() {
+  if (typeof EventSource === "undefined") return;
+  try {
+    if (_eventSource) {
+      _eventSource.close();
+    }
+    const es = new EventSource("/api/events");
+    _eventSource = es;
+
+    es.onopen = () => {
+      const dot = document.getElementById("status-dot");
+      if (dot) {
+        dot.classList.remove("paused");
+      }
+    };
+
+    es.onmessage = async (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.status) {
+          applyStatus(msg.status);
+        }
+        if (msg.event === "poll_started") {
+          currentStatus.is_polling_now = true;
+          updatePollerStatusPillText();
+        } else if (msg.event === "poll_completed") {
+          if (Array.isArray(msg.changed_skus) && msg.changed_skus.length > 0) {
+            msg.changed_skus.forEach((s) => recentlyChangedSkusSet.add(String(s).toUpperCase()));
+            setTimeout(() => recentlyChangedSkusSet.clear(), 8000);
+          }
+          if (document.getElementById("tab-deals")?.classList.contains("active")) {
+            await loadDeals(Boolean(msg.changed_skus && msg.changed_skus.length > 0));
+          }
+          if (Array.isArray(msg.triggered_alerts) && msg.triggered_alerts.length > 0) {
+            showToast(`🔔 ${msg.triggered_alerts.length} new refurbished deal alerts triggered!`);
+            await loadAlerts();
+          }
+        }
+      } catch (_) {}
+    };
+
+    es.onerror = () => {
+      es.close();
+      setTimeout(connectEventStream, 5000);
+    };
+  } catch (_) {}
+}
+
+// Initial boot, live SSE connection, 1s countdown ticker & fallback auto-refresh
 (async function init() {
   await loadStatus();
   await loadWatchlist();
   await loadDeals(true);
   await loadAlerts();
+  connectEventStream();
+
+  // Smooth 1-second countdown ticker for Next Poll
+  setInterval(updatePollerStatusPillText, 1000);
+
+  // Fallback periodic sync every 10s
   setInterval(async () => {
     await loadStatus();
     if (document.getElementById("tab-deals").classList.contains("active")) {
       await loadDeals(false);
     }
-  }, 5000);
+  }, 10000);
 })();

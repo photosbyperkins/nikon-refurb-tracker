@@ -92,7 +92,10 @@ async def _run_check_cli(sub50_only: bool, show_oos: bool) -> int:
     console.print(
         "[bold yellow]Scanning NikonUSA.com refurbished catalog & resolving brand-new MSRPs...[/bold yellow]"
     )
-    snapshots, alerts = await scheduler.run_once()
+    try:
+        snapshots, alerts = await scheduler.run_once()
+    finally:
+        await scheduler.scraper.aclose()
     settings = db.get_settings()
     threshold = settings.global_discount_threshold_pct
 

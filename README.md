@@ -17,18 +17,18 @@ When NikonUSA runs a flash refurbished sale (e.g., *"10% Off Select Refurbished 
 
 ---
 
-## Features
+## Features (v1.0)
 
 - 🔥 **Sub-50% of MSRP Deal Detection**: Automatically highlights and alerts when any refurbished camera, kit, or lens drops to $\le 50\%$ of its true brand-new MSRP (configurable threshold).
-- 📦 **Exact Warehouse Stock Counts**: Displays NikonUSA's live `availableQuantity` for every SKU.
+- 🏆 **All-Time Low (ATL) & Flash Sale Event Detection**: Automatically badges items at or below their historical lowest price (`🏆 All-Time Low`) and surfaces a live **NikonUSA Flash Sale Event Banner** when storewide extra refurb markdowns go live.
+- 📉 **Warehouse Stock Velocity & Sellout Forecasting**: Tracks live `availableQuantity`, 24-hour unit burn rate (`units/hr`), and estimated hours/days until sellout.
+- 📷 **Mount System & Quick-Category Filtering**: Instant filtering by **Z-Mount FX (Full Frame)**, **Z-Mount DX (APS-C)**, **F-Mount (DSLR)**, and **Optics & Accessories**, plus one-click category pills.
 - 🔍 **266-SKU Out-of-Stock & Hidden Refurbished Catalog Browser**: Includes 266 curated Nikon refurbished cameras, Z-mount & F-mount lenses, teleconverters, FTZ adapters, flashes, and sport optics discovered via NikonUSA sitemap probing—even when they are out of stock and hidden from Nikon's main `/refurbished-cameras` page.
-- 🎯 **Custom Watchlist & 1-Click Monitoring**: Watch any NikonUSA refurbished URL or pick from the 266-SKU catalog with custom max price ($), min `% off MSRP`, and instant restock (`0 -> N`) triggers.
-- 🔔 **Fast Multi-Channel Alerts**:
-  - **Windows & macOS Native Desktop Notifications** + audible chime + optional auto-open product page in browser.
-  - **Mobile Push via [ntfy.sh](https://ntfy.sh)** (free instant push notifications to iOS/Android with one-tap link to NikonUSA).
-  - **Discord Rich Webhooks**, **Telegram Bot**, and **Pushover**.
-- 🖥️ **Local Web Dashboard + System Tray Icon**: Runs quietly in your Windows system tray or macOS menu bar with a dark-mode local web UI at `http://127.0.0.1:8470`.
-- 📈 **SQLite Price & Stock History**: Tracks all historical price drops, lowest-ever seen prices, and stock fluctuations over time.
+- 🎯 **Custom Watchlist & Price-Drop Monitoring**: Watch any NikonUSA refurbished URL or pick from the 266-SKU catalog with custom max price ($), min `% off MSRP`, instant restock (`0 -> N`), and **Any Price Drop** triggers.
+- 🔔 **Fast Multi-Channel Alerts (with Debounced Audio & Per-Channel Testing)**:
+  - **Windows & macOS Native Desktop Notifications** + debounced audible chime (consolidated batch summary on cold start) + topbar mute toggle + optional auto-open product page in browser.
+  - **Mobile Push via [ntfy.sh](https://ntfy.sh)**, **Discord Rich Webhooks**, **Telegram Bot**, and **Pushover**, each with an independent **🧪 Test** button in Settings.
+- ⚡ **Real-Time SSE Dashboard + Interactive History Charts**: Live Server-Sent Events (`/api/events`) push poll updates, countdown timers, and row-change highlights without page reloads, paired with an interactive dual-panel SVG price/stock crosshair chart, 1-click CSV export, and portable JSON Backup & Restore.
 
 ---
 

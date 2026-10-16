@@ -57,12 +57,19 @@ class TrackerDatabase:
     def __init__(self, db_path: Path | str | None = None) -> None:
         self.db_path = Path(db_path) if db_path else get_default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._cached_variants: list[VariantSnapshot] | None = None
+        self._cached_velocity_map: dict[str, dict[str, object]] | None = None
         self._init_db()
+
+    def _invalidate_cache(self) -> None:
+        self._cached_variants = None
+        self._cached_velocity_map = None
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=15.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
@@ -111,6 +118,8 @@ class TrackerDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_history_sku_time
                     ON price_stock_history(sku, recorded_at);
+                CREATE INDEX IF NOT EXISTS idx_history_recorded_at
+                    ON price_stock_history(recorded_at);
 
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,6 +130,7 @@ class TrackerDatabase:
                     max_price_dollars REAL,
                     min_discount_pct_msrp REAL DEFAULT 50.0,
                     notify_on_restock INTEGER NOT NULL DEFAULT 1,
+                    notify_on_price_drop INTEGER NOT NULL DEFAULT 1,
                     auto_open_browser INTEGER NOT NULL DEFAULT 0,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
@@ -152,6 +162,14 @@ class TrackerDatabase:
                 );
                 """
             )
+            # Migrate existing watchlist table if notify_on_price_drop column is missing
+            try:
+                conn.execute(
+                    "ALTER TABLE watchlist ADD COLUMN notify_on_price_drop INTEGER NOT NULL DEFAULT 1"
+                )
+            except sqlite3.OperationalError:
+                pass
+
             # Seed default watchlist entry if table is completely empty
             cur = conn.execute("SELECT COUNT(*) AS cnt FROM watchlist")
             if cur.fetchone()["cnt"] == 0:
@@ -159,8 +177,8 @@ class TrackerDatabase:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO watchlist
-                    (sku, slug, product_key, label, max_price_dollars, min_discount_pct_msrp, notify_on_restock, auto_open_browser, enabled, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (sku, slug, product_key, label, max_price_dollars, min_discount_pct_msrp, notify_on_restock, notify_on_price_drop, auto_open_browser, enabled, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "1761Q",
@@ -169,6 +187,7 @@ class TrackerDatabase:
                         "Nikon Z f Mirrorless Body (Refurbished)",
                         1400.0,
                         30.0,
+                        1,
                         1,
                         0,
                         1,
@@ -185,11 +204,15 @@ class TrackerDatabase:
             return self._row_to_variant(row) if row else None
 
     def get_all_variants(self) -> list[VariantSnapshot]:
+        if self._cached_variants is not None:
+            return list(self._cached_variants)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM products_variants ORDER BY is_on_stock DESC, refurb_sale_cents ASC"
             ).fetchall()
-            return [self._row_to_variant(r) for r in rows]
+            variants = [self._row_to_variant(r) for r in rows]
+        self._cached_variants = variants
+        return list(variants)
 
     def get_cached_msrp(
         self, sku: str, max_age_hours: int = 24
@@ -201,20 +224,32 @@ class TrackerDatabase:
                 "SELECT true_msrp_cents, new_retail_cents, msrp_source, msrp_updated_at FROM products_variants WHERE sku = ?",
                 (clean_sku,),
             ).fetchone()
-            if not row:
-                return None
-            msrp_cents = row["true_msrp_cents"]
-            if not isinstance(msrp_cents, int) or msrp_cents <= 0:
-                return None
-            source = row["msrp_source"] or "unknown"
-            if source == "manual":
-                return (msrp_cents, row["new_retail_cents"], "manual")
-            if row["msrp_updated_at"]:
+            if row:
+                msrp_cents = row["true_msrp_cents"]
+                if isinstance(msrp_cents, int) and msrp_cents > 0:
+                    source = row["msrp_source"] or "unknown"
+                    if source == "manual":
+                        return (msrp_cents, row["new_retail_cents"], "manual")
+                    if row["msrp_updated_at"]:
+                        try:
+                            updated = datetime.fromisoformat(row["msrp_updated_at"])
+                            if datetime.now(timezone.utc) - updated < timedelta(hours=max_age_hours):
+                                return (msrp_cents, row["new_retail_cents"], source)
+                        except ValueError:
+                            pass
+            # Also check persistent manual_msrps store in settings table
+            kv_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'manual_msrps'"
+            ).fetchone()
+            if kv_row:
                 try:
-                    updated = datetime.fromisoformat(row["msrp_updated_at"])
-                    if datetime.now(timezone.utc) - updated < timedelta(hours=max_age_hours):
-                        return (msrp_cents, row["new_retail_cents"], source)
-                except ValueError:
+                    kv_map = json.loads(kv_row["value"])
+                    if isinstance(kv_map, dict) and clean_sku in kv_map:
+                        dollars = float(kv_map[clean_sku])
+                        if dollars > 0:
+                            cents = int(round(dollars * 100))
+                            return (cents, None, "manual")
+                except Exception:
                     pass
             return None
 
@@ -232,170 +267,245 @@ class TrackerDatabase:
                 """,
                 (msrp_cents, now, now, clean_sku),
             )
+            kv_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'manual_msrps'"
+            ).fetchone()
+            kv_map: dict[str, float] = {}
+            if kv_row:
+                try:
+                    loaded = json.loads(kv_row["value"])
+                    if isinstance(loaded, dict):
+                        kv_map = {str(k).upper(): float(v) for k, v in loaded.items()}
+                except Exception:
+                    pass
+            kv_map[clean_sku] = round(float(msrp_dollars), 2)
+            conn.execute(
+                """
+                INSERT INTO settings (key, value) VALUES ('manual_msrps', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (json.dumps(kv_map),),
+            )
+        self._invalidate_cache()
         return self.get_variant(clean_sku)
+
+    def get_manual_msrps(self) -> dict[str, float]:
+        """Return a mapping of {sku: msrp_dollars} for all manually overridden MSRPs."""
+        merged: dict[str, float] = {}
+        with self._connect() as conn:
+            kv_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'manual_msrps'"
+            ).fetchone()
+            if kv_row:
+                try:
+                    loaded = json.loads(kv_row["value"])
+                    if isinstance(loaded, dict):
+                        for k, v in loaded.items():
+                            if isinstance(v, (int, float)) and float(v) > 0:
+                                merged[str(k).upper()] = round(float(v), 2)
+                except Exception:
+                    pass
+            rows = conn.execute(
+                "SELECT sku, true_msrp_cents FROM products_variants WHERE msrp_source = 'manual' AND true_msrp_cents > 0"
+            ).fetchall()
+            for r in rows:
+                merged[str(r["sku"]).upper()] = round(int(r["true_msrp_cents"]) / 100.0, 2)
+        return merged
 
     def upsert_variant(
         self, snapshot: VariantSnapshot
     ) -> tuple[VariantSnapshot | None, VariantSnapshot]:
-        """Insert or update a variant snapshot and record price/stock history if changed.
+        """Insert or update a single variant snapshot and record price/stock history if changed."""
+        return self.upsert_variants_batch([snapshot])[0]
 
-        Returns (previous_snapshot, updated_snapshot).
-        """
-        previous = self.get_variant(snapshot.sku)
+    def upsert_variants_batch(
+        self, snapshots: list[VariantSnapshot]
+    ) -> list[tuple[VariantSnapshot | None, VariantSnapshot]]:
+        """Insert or update a batch of variant snapshots inside a single SQLite transaction."""
+        if not snapshots:
+            return []
+
         now = datetime.now(timezone.utc).isoformat()
-        snapshot.updated_at = now
-
-        # Preserve manual MSRP override or existing catalog MSRP if new snapshot didn't resolve one
-        msrp_updated_at: str | None = (
-            now if (snapshot.true_msrp_cents and snapshot.true_msrp_cents > 0) else None
-        )
-        if previous:
-            if previous.msrp_source == "manual" and previous.true_msrp_cents:
-                snapshot.true_msrp_cents = previous.true_msrp_cents
-                snapshot.msrp_source = "manual"
-                msrp_updated_at = None
-            elif not snapshot.true_msrp_cents and previous.true_msrp_cents:
-                snapshot.true_msrp_cents = previous.true_msrp_cents
-                snapshot.new_retail_cents = snapshot.new_retail_cents or previous.new_retail_cents
-                snapshot.msrp_source = previous.msrp_source
-                msrp_updated_at = None
-            elif (
-                snapshot.true_msrp_cents == previous.true_msrp_cents
-                and snapshot.msrp_source == previous.msrp_source
-            ):
-                # Keep original msrp_updated_at timestamp so the 24h TTL expires naturally
-                msrp_updated_at = None
-
-            lows = [
-                c
-                for c in [previous.lowest_seen_cents, snapshot.refurb_sale_cents]
-                if c and c > 0
-            ]
-            highs = [
-                c
-                for c in [previous.highest_seen_cents, snapshot.refurb_sale_cents]
-                if c and c > 0
-            ]
-            snapshot.lowest_seen_cents = min(lows) if lows else snapshot.refurb_sale_cents
-            snapshot.highest_seen_cents = max(highs) if highs else snapshot.refurb_sale_cents
-            if snapshot.is_on_stock:
-                snapshot.last_in_stock_at = now
-            else:
-                snapshot.last_in_stock_at = previous.last_in_stock_at
-        else:
-            snapshot.lowest_seen_cents = snapshot.refurb_sale_cents
-            snapshot.highest_seen_cents = snapshot.refurb_sale_cents
-            snapshot.last_in_stock_at = now if snapshot.is_on_stock else None
+        results: list[tuple[VariantSnapshot | None, VariantSnapshot]] = []
+        manual_msrp_map = self.get_manual_msrps()
 
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO products_variants (
-                    sku, new_sku, product_key, new_product_key, name, variant_label,
-                    slug, new_slug, category, product_type_key, product_url, image_url,
-                    refurb_reg_cents, refurb_sale_cents, new_retail_cents, true_msrp_cents,
-                    msrp_source, msrp_updated_at, promo_message, is_on_stock,
-                    available_quantity, add_to_cart_status, lowest_seen_cents,
-                    highest_seen_cents, last_in_stock_at, updated_at
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
-                ON CONFLICT(sku) DO UPDATE SET
-                    new_sku = excluded.new_sku,
-                    product_key = excluded.product_key,
-                    new_product_key = excluded.new_product_key,
-                    name = excluded.name,
-                    variant_label = excluded.variant_label,
-                    slug = excluded.slug,
-                    new_slug = excluded.new_slug,
-                    category = excluded.category,
-                    product_type_key = excluded.product_type_key,
-                    product_url = excluded.product_url,
-                    image_url = CASE WHEN excluded.image_url != '' THEN excluded.image_url ELSE products_variants.image_url END,
-                    refurb_reg_cents = excluded.refurb_reg_cents,
-                    refurb_sale_cents = excluded.refurb_sale_cents,
-                    new_retail_cents = COALESCE(excluded.new_retail_cents, products_variants.new_retail_cents),
-                    true_msrp_cents = COALESCE(excluded.true_msrp_cents, products_variants.true_msrp_cents),
-                    msrp_source = excluded.msrp_source,
-                    msrp_updated_at = COALESCE(excluded.msrp_updated_at, products_variants.msrp_updated_at),
-                    promo_message = excluded.promo_message,
-                    is_on_stock = excluded.is_on_stock,
-                    available_quantity = excluded.available_quantity,
-                    add_to_cart_status = excluded.add_to_cart_status,
-                    lowest_seen_cents = excluded.lowest_seen_cents,
-                    highest_seen_cents = excluded.highest_seen_cents,
-                    last_in_stock_at = excluded.last_in_stock_at,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    snapshot.sku,
-                    snapshot.new_sku,
-                    snapshot.product_key,
-                    snapshot.new_product_key,
-                    snapshot.name,
-                    snapshot.variant_label,
-                    snapshot.slug,
-                    snapshot.new_slug,
-                    snapshot.category,
-                    snapshot.product_type_key,
-                    snapshot.product_url,
-                    snapshot.image_url,
-                    snapshot.refurb_reg_cents,
-                    snapshot.refurb_sale_cents,
-                    snapshot.new_retail_cents,
-                    snapshot.true_msrp_cents,
-                    snapshot.msrp_source,
-                    msrp_updated_at,
-                    snapshot.promo_message,
-                    1 if snapshot.is_on_stock else 0,
-                    snapshot.available_quantity,
-                    snapshot.add_to_cart_status,
-                    snapshot.lowest_seen_cents,
-                    snapshot.highest_seen_cents,
-                    snapshot.last_in_stock_at,
-                    snapshot.updated_at,
-                ),
-            )
+            existing_rows = conn.execute("SELECT * FROM products_variants").fetchall()
+            existing_map: dict[str, VariantSnapshot] = {
+                str(r["sku"]).upper(): self._row_to_variant(r) for r in existing_rows
+            }
+            hist_day_rows = conn.execute(
+                "SELECT sku, substr(MAX(recorded_at), 1, 10) AS last_day FROM price_stock_history GROUP BY sku"
+            ).fetchall()
+            last_hist_day_map: dict[str, str] = {
+                str(r["sku"]).upper(): str(r["last_day"] or "") for r in hist_day_rows
+            }
 
-            # Record history point if new SKU, if price/stock changed, or once per new UTC day
-            last_hist_row = conn.execute(
-                "SELECT recorded_at FROM price_stock_history WHERE sku = ? ORDER BY recorded_at DESC LIMIT 1",
-                (snapshot.sku,),
-            ).fetchone()
-            last_hist_day = str(last_hist_row["recorded_at"])[:10] if last_hist_row else ""
-            should_record = (
-                previous is None
-                or last_hist_day != now[:10]
-                or previous.refurb_sale_cents != snapshot.refurb_sale_cents
-                or previous.refurb_reg_cents != snapshot.refurb_reg_cents
-                or previous.is_on_stock != snapshot.is_on_stock
-                or previous.available_quantity != snapshot.available_quantity
-            )
-            if should_record:
+            for snapshot in snapshots:
+                clean_sku = snapshot.sku.strip().upper()
+                snapshot.sku = clean_sku
+                previous = existing_map.get(clean_sku)
+                snapshot.updated_at = now
+
+                if clean_sku in manual_msrp_map:
+                    snapshot.true_msrp_cents = int(round(manual_msrp_map[clean_sku] * 100))
+                    snapshot.msrp_source = "manual"
+
+                msrp_updated_at: str | None = (
+                    now if (snapshot.true_msrp_cents and snapshot.true_msrp_cents > 0) else None
+                )
+                if previous:
+                    if previous.msrp_source == "manual" and previous.true_msrp_cents:
+                        snapshot.true_msrp_cents = previous.true_msrp_cents
+                        snapshot.msrp_source = "manual"
+                        msrp_updated_at = None
+                    elif not snapshot.true_msrp_cents and previous.true_msrp_cents:
+                        snapshot.true_msrp_cents = previous.true_msrp_cents
+                        snapshot.new_retail_cents = (
+                            snapshot.new_retail_cents or previous.new_retail_cents
+                        )
+                        snapshot.msrp_source = previous.msrp_source
+                        msrp_updated_at = None
+                    elif (
+                        snapshot.true_msrp_cents == previous.true_msrp_cents
+                        and snapshot.msrp_source == previous.msrp_source
+                    ):
+                        msrp_updated_at = None
+
+                    lows = [
+                        c
+                        for c in [previous.lowest_seen_cents, snapshot.refurb_sale_cents]
+                        if c and c > 0
+                    ]
+                    highs = [
+                        c
+                        for c in [previous.highest_seen_cents, snapshot.refurb_sale_cents]
+                        if c and c > 0
+                    ]
+                    snapshot.lowest_seen_cents = (
+                        min(lows) if lows else snapshot.refurb_sale_cents
+                    )
+                    snapshot.highest_seen_cents = (
+                        max(highs) if highs else snapshot.refurb_sale_cents
+                    )
+                    if snapshot.is_on_stock:
+                        snapshot.last_in_stock_at = now
+                    else:
+                        snapshot.last_in_stock_at = previous.last_in_stock_at
+                else:
+                    snapshot.lowest_seen_cents = snapshot.refurb_sale_cents
+                    snapshot.highest_seen_cents = snapshot.refurb_sale_cents
+                    snapshot.last_in_stock_at = now if snapshot.is_on_stock else None
+
                 conn.execute(
                     """
-                    INSERT INTO price_stock_history
-                    (sku, refurb_sale_cents, refurb_reg_cents, true_msrp_cents, is_on_stock, available_quantity, recorded_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO products_variants (
+                        sku, new_sku, product_key, new_product_key, name, variant_label,
+                        slug, new_slug, category, product_type_key, product_url, image_url,
+                        refurb_reg_cents, refurb_sale_cents, new_retail_cents, true_msrp_cents,
+                        msrp_source, msrp_updated_at, promo_message, is_on_stock,
+                        available_quantity, add_to_cart_status, lowest_seen_cents,
+                        highest_seen_cents, last_in_stock_at, updated_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    ON CONFLICT(sku) DO UPDATE SET
+                        new_sku = excluded.new_sku,
+                        product_key = excluded.product_key,
+                        new_product_key = excluded.new_product_key,
+                        name = excluded.name,
+                        variant_label = excluded.variant_label,
+                        slug = excluded.slug,
+                        new_slug = excluded.new_slug,
+                        category = excluded.category,
+                        product_type_key = excluded.product_type_key,
+                        product_url = excluded.product_url,
+                        image_url = CASE WHEN excluded.image_url != '' THEN excluded.image_url ELSE products_variants.image_url END,
+                        refurb_reg_cents = excluded.refurb_reg_cents,
+                        refurb_sale_cents = excluded.refurb_sale_cents,
+                        new_retail_cents = COALESCE(excluded.new_retail_cents, products_variants.new_retail_cents),
+                        true_msrp_cents = COALESCE(excluded.true_msrp_cents, products_variants.true_msrp_cents),
+                        msrp_source = excluded.msrp_source,
+                        msrp_updated_at = COALESCE(excluded.msrp_updated_at, products_variants.msrp_updated_at),
+                        promo_message = excluded.promo_message,
+                        is_on_stock = excluded.is_on_stock,
+                        available_quantity = excluded.available_quantity,
+                        add_to_cart_status = excluded.add_to_cart_status,
+                        lowest_seen_cents = excluded.lowest_seen_cents,
+                        highest_seen_cents = excluded.highest_seen_cents,
+                        last_in_stock_at = excluded.last_in_stock_at,
+                        updated_at = excluded.updated_at
                     """,
                     (
                         snapshot.sku,
-                        snapshot.refurb_sale_cents,
+                        snapshot.new_sku,
+                        snapshot.product_key,
+                        snapshot.new_product_key,
+                        snapshot.name,
+                        snapshot.variant_label,
+                        snapshot.slug,
+                        snapshot.new_slug,
+                        snapshot.category,
+                        snapshot.product_type_key,
+                        snapshot.product_url,
+                        snapshot.image_url,
                         snapshot.refurb_reg_cents,
+                        snapshot.refurb_sale_cents,
+                        snapshot.new_retail_cents,
                         snapshot.true_msrp_cents,
+                        snapshot.msrp_source,
+                        msrp_updated_at,
+                        snapshot.promo_message,
                         1 if snapshot.is_on_stock else 0,
                         snapshot.available_quantity,
-                        now,
+                        snapshot.add_to_cart_status,
+                        snapshot.lowest_seen_cents,
+                        snapshot.highest_seen_cents,
+                        snapshot.last_in_stock_at,
+                        snapshot.updated_at,
                     ),
                 )
 
-        return previous, snapshot
+                last_hist_day = last_hist_day_map.get(clean_sku, "")
+                should_record = (
+                    previous is None
+                    or last_hist_day != now[:10]
+                    or previous.refurb_sale_cents != snapshot.refurb_sale_cents
+                    or previous.refurb_reg_cents != snapshot.refurb_reg_cents
+                    or previous.is_on_stock != snapshot.is_on_stock
+                    or previous.available_quantity != snapshot.available_quantity
+                )
+                if should_record:
+                    conn.execute(
+                        """
+                        INSERT INTO price_stock_history
+                        (sku, refurb_sale_cents, refurb_reg_cents, true_msrp_cents, is_on_stock, available_quantity, recorded_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            snapshot.sku,
+                            snapshot.refurb_sale_cents,
+                            snapshot.refurb_reg_cents,
+                            snapshot.true_msrp_cents,
+                            1 if snapshot.is_on_stock else 0,
+                            snapshot.available_quantity,
+                            now,
+                        ),
+                    )
+                    last_hist_day_map[clean_sku] = now[:10]
+
+                existing_map[clean_sku] = snapshot
+                results.append((previous, snapshot))
+
+        self._invalidate_cache()
+        return results
 
     def mark_missing_catalog_items_out_of_stock(self, seen_skus: set[str]) -> None:
         """Mark previously in-stock SKUs that disappeared from the catalog as out of stock."""
         if not seen_skus:
             return
         now = datetime.now(timezone.utc).isoformat()
+        mutated = False
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT sku, refurb_sale_cents, refurb_reg_cents, true_msrp_cents FROM products_variants WHERE is_on_stock = 1"
@@ -403,6 +513,7 @@ class TrackerDatabase:
             for r in rows:
                 sku = r["sku"]
                 if sku not in seen_skus:
+                    mutated = True
                     conn.execute(
                         """
                         UPDATE products_variants
@@ -425,6 +536,8 @@ class TrackerDatabase:
                             now,
                         ),
                     )
+        if mutated:
+            self._invalidate_cache()
 
     def get_history(self, sku: str, limit: int = 200) -> list[dict[str, object]]:
         clean_sku = sku.strip().upper()
@@ -536,11 +649,24 @@ class TrackerDatabase:
 
     def get_velocity_map(self, variants: list[VariantSnapshot] | None = None) -> dict[str, dict[str, object]]:
         """Compute 24h/7d unit velocity, burn rate, and sellout predictions for all tracked SKUs."""
+        is_full_query = variants is None
         if variants is None:
             variants = self.get_all_variants()
+        elif (
+            self._cached_variants is not None
+            and len(variants) == len(self._cached_variants)
+        ):
+            is_full_query = True
+
+        if is_full_query and self._cached_velocity_map is not None:
+            return self._cached_velocity_map
+
         variants_by_sku = {v.sku.upper(): v for v in variants}
+        if not variants_by_sku:
+            return {}
 
         now_dt = datetime.now(timezone.utc)
+        cutoff_8d = (now_dt - timedelta(days=8)).isoformat()
         cutoff_7d = (now_dt - timedelta(days=7)).isoformat()
         cutoff_24h = (now_dt - timedelta(hours=24)).isoformat()
 
@@ -549,8 +675,10 @@ class TrackerDatabase:
                 """
                 SELECT sku, available_quantity, is_on_stock, recorded_at
                 FROM price_stock_history
+                WHERE recorded_at >= ?
                 ORDER BY sku ASC, recorded_at ASC
-                """
+                """,
+                (cutoff_8d,),
             ).fetchall()
 
         rows_by_sku: dict[str, list[sqlite3.Row]] = {}
@@ -661,6 +789,8 @@ class TrackerDatabase:
                 "sellout_forecast": sellout_forecast,
             }
 
+        if is_full_query:
+            self._cached_velocity_map = result
         return result
 
     # --- Watchlist CRUD ---
@@ -679,6 +809,9 @@ class TrackerDatabase:
                     max_price_dollars=r["max_price_dollars"],
                     min_discount_pct_msrp=r["min_discount_pct_msrp"],
                     notify_on_restock=bool(r["notify_on_restock"]),
+                    notify_on_price_drop=bool(
+                        r["notify_on_price_drop"] if "notify_on_price_drop" in r.keys() else 1
+                    ),
                     auto_open_browser=bool(r["auto_open_browser"]),
                     enabled=bool(r["enabled"]),
                     created_at=r["created_at"],
@@ -692,8 +825,8 @@ class TrackerDatabase:
             conn.execute(
                 """
                 INSERT INTO watchlist
-                (sku, slug, product_key, label, max_price_dollars, min_discount_pct_msrp, notify_on_restock, auto_open_browser, enabled, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (sku, slug, product_key, label, max_price_dollars, min_discount_pct_msrp, notify_on_restock, notify_on_price_drop, auto_open_browser, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(sku) DO UPDATE SET
                     slug = excluded.slug,
                     product_key = excluded.product_key,
@@ -701,6 +834,7 @@ class TrackerDatabase:
                     max_price_dollars = excluded.max_price_dollars,
                     min_discount_pct_msrp = excluded.min_discount_pct_msrp,
                     notify_on_restock = excluded.notify_on_restock,
+                    notify_on_price_drop = excluded.notify_on_price_drop,
                     auto_open_browser = excluded.auto_open_browser,
                     enabled = excluded.enabled
                 """,
@@ -712,6 +846,7 @@ class TrackerDatabase:
                     entry.max_price_dollars,
                     entry.min_discount_pct_msrp,
                     1 if entry.notify_on_restock else 0,
+                    1 if entry.notify_on_price_drop else 0,
                     1 if entry.auto_open_browser else 0,
                     1 if entry.enabled else 0,
                     entry.created_at or now,
@@ -729,6 +864,9 @@ class TrackerDatabase:
                 max_price_dollars=row["max_price_dollars"],
                 min_discount_pct_msrp=row["min_discount_pct_msrp"],
                 notify_on_restock=bool(row["notify_on_restock"]),
+                notify_on_price_drop=bool(
+                    row["notify_on_price_drop"] if "notify_on_price_drop" in row.keys() else 1
+                ),
                 auto_open_browser=bool(row["auto_open_browser"]),
                 enabled=bool(row["enabled"]),
                 created_at=row["created_at"],
@@ -738,6 +876,61 @@ class TrackerDatabase:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM watchlist WHERE sku = ?", (sku.strip().upper(),))
             return cur.rowcount > 0
+
+    # --- Backup & Restore ---
+    def export_backup(self) -> dict[str, object]:
+        """Export portable JSON backup of settings, watchlist rules, and manual MSRP overrides."""
+        return {
+            "version": "1.0.0",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "settings": self.get_settings().model_dump(),
+            "watchlist": [w.model_dump() for w in self.get_watchlist()],
+            "manual_msrps": self.get_manual_msrps(),
+        }
+
+    def import_backup(self, payload: dict[str, object]) -> dict[str, int]:
+        """Restore settings, watchlist rules, and manual MSRP overrides from a backup dictionary."""
+        settings_restored = 0
+        watchlist_restored = 0
+        manual_msrps_restored = 0
+
+        raw_settings = payload.get("settings")
+        if isinstance(raw_settings, dict):
+            self.save_settings(TrackerSettings(**raw_settings))
+            settings_restored = 1
+
+        raw_watchlist = payload.get("watchlist")
+        if isinstance(raw_watchlist, list):
+            for item in raw_watchlist:
+                if isinstance(item, dict) and item.get("sku") and item.get("slug"):
+                    entry = WatchlistEntry(
+                        sku=str(item["sku"]),
+                        slug=str(item["slug"]),
+                        product_key=str(item.get("product_key") or item["sku"]),
+                        label=str(item.get("label") or item["sku"]),
+                        max_price_dollars=item.get("max_price_dollars"),
+                        min_discount_pct_msrp=item.get("min_discount_pct_msrp", 50.0),
+                        notify_on_restock=bool(item.get("notify_on_restock", True)),
+                        notify_on_price_drop=bool(item.get("notify_on_price_drop", True)),
+                        auto_open_browser=bool(item.get("auto_open_browser", False)),
+                        enabled=bool(item.get("enabled", True)),
+                    )
+                    self.upsert_watchlist(entry)
+                    watchlist_restored += 1
+
+        raw_msrps = payload.get("manual_msrps")
+        if isinstance(raw_msrps, dict):
+            for sku, dollars in raw_msrps.items():
+                if isinstance(dollars, (int, float)) and float(dollars) > 0:
+                    self.set_manual_msrp(str(sku), float(dollars))
+                    manual_msrps_restored += 1
+
+        self._invalidate_cache()
+        return {
+            "settings_restored": settings_restored,
+            "watchlist_restored": watchlist_restored,
+            "manual_msrps_restored": manual_msrps_restored,
+        }
 
     # --- Alerts Log & Cooldown ---
     def has_recent_alert(

@@ -11,13 +11,13 @@
     <div class="brand">
       <div class="nikon-badge" aria-hidden="true">N</div>
       <div>
-        <h1>NikonUSA Refurbished Tracker</h1>
-        <p class="subtitle">True New-MSRP Resolver • Sub-50% MSRP &amp; Flash Sale Alert Engine</p>
+        <h1>NikonUSA Refurbished Tracker <span class="version-pill">v1.0</span></h1>
+        <p class="subtitle">True New-MSRP Resolver • Sub-50% MSRP &amp; Real-Time Restock Engine</p>
       </div>
     </div>
 
     <div class="topbar-actions">
-      <div id="poller-status-pill" class="status-pill" title="Background poller status">
+      <div id="poller-status-pill" class="status-pill" title="Live background poller status &amp; next scan countdown">
         <span class="status-dot" id="status-dot"></span>
         <span id="status-text">Connecting...</span>
       </div>
@@ -27,8 +27,11 @@
       <button id="btn-pause-resume" class="btn btn-secondary" title="Pause or resume background polling">
         ⏸ Pause
       </button>
-      <button id="btn-test-alert" class="btn btn-secondary" title="Send a test alert to enabled channels">
-        🔔 Test Alert
+      <button id="btn-mute-desktop" class="btn btn-secondary" title="Toggle desktop toast &amp; sound notifications (synced with System Tray)">
+        🔔 Alerts On
+      </button>
+      <button id="btn-test-alert" class="btn btn-secondary" title="Send a test alert to all enabled channels">
+        🧪 Test Alert
       </button>
     </div>
   </header>
@@ -38,6 +41,17 @@
     <div id="error-banner" class="error-banner hidden" role="alert">
       <span id="error-banner-text"></span>
       <button type="button" class="btn btn-secondary btn-sm" id="btn-retry-error">⚡ Retry Now</button>
+    </div>
+
+    <!-- Active NikonUSA Flash Sale Event Banner -->
+    <div id="flash-sale-banner" class="flash-sale-banner hidden" role="region" aria-label="Active NikonUSA Flash Sale">
+      <div class="flash-sale-content">
+        <span class="flash-sale-badge">⚡ ACTIVE SALE EVENT</span>
+        <span id="flash-sale-text">NikonUSA Refurbished Flash Sale detected!</span>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-filter-flash-sale">
+        🏷️ View Flash Sale Deals
+      </button>
     </div>
 
     <!-- KPI Summary Cards (All Interactive) -->
@@ -56,11 +70,11 @@
 
       <div class="kpi-card" id="kpi-extrasale-card" role="button" tabindex="0" title="Click to toggle filter: Items with extra refurb flash promo">
         <div class="kpi-label">🏷️ Extra Refurb Flash Sale</div>
-        <div class="kpi-value" id="kpi-extrasale-count">0</div>
+        <div class="kpi-value"><span id="kpi-extrasale-count">0</span> <small id="kpi-atl-summary"></small></div>
         <div class="kpi-sub">Additional % discount below regular refurb price</div>
       </div>
 
-      <div class="kpi-card" id="kpi-watchlist-card" role="button" tabindex="0" title="Click to open your Custom Watchlist & Out-of-Stock Monitor">
+      <div class="kpi-card" id="kpi-watchlist-card" role="button" tabindex="0" title="Click to open your Custom Watchlist &amp; Out-of-Stock Monitor">
         <div class="kpi-label">🎯 Custom Watchlist</div>
         <div class="kpi-value" id="kpi-watchlist-count">0</div>
         <div class="kpi-sub" id="kpi-last-poll">Last poll: Never</div>
@@ -90,9 +104,17 @@
           type="search"
           id="filter-search"
           class="input search-input"
-          placeholder="Press / to search model, lens, SKU (e.g. Z 8, Z 6III, Plena, 180-600, 1695Q)..."
+          placeholder="Press / to search model, lens, mount, SKU (e.g. Z 8, Z6III, Plena, 180-600, 1695Q)..."
           aria-label="Search refurbished deals"
         />
+
+        <select id="filter-mount" class="select" aria-label="Filter by mount or sensor system">
+          <option value="ALL">All Mounts &amp; Formats</option>
+          <option value="Z-Mount FX">Z-Mount FX (Full-Frame)</option>
+          <option value="Z-Mount DX">Z-Mount DX (APS-C)</option>
+          <option value="F-Mount">F-Mount (DSLR)</option>
+          <option value="Optics & Accessories">Optics &amp; Accessories</option>
+        </select>
 
         <select id="filter-category" class="select" aria-label="Filter by category">
           <option value="ALL">All Categories</option>
@@ -108,9 +130,14 @@
           <option value="name_asc">Sort: Name (A–Z)</option>
         </select>
 
-        <label class="chip-toggle hot-chip" title="Only show deals at or below 50% of New MSRP">
+        <label class="chip-toggle hot-chip" title="Only show deals at or below your hot-deal % of New MSRP threshold">
           <input type="checkbox" id="filter-sub50" />
-          <span>🔥 &le;50% of MSRP Only</span>
+          <span>🔥 &le;50% of MSRP</span>
+        </label>
+
+        <label class="chip-toggle" title="Only show items currently at their all-time lowest recorded refurbished price">
+          <input type="checkbox" id="filter-atl" />
+          <span>🏆 All-Time Low</span>
         </label>
 
         <label class="chip-toggle" title="Only show items currently available to add to cart">
@@ -120,28 +147,31 @@
 
         <label class="chip-toggle" title="Only show items with an extra promotional price drop below regular refurb price">
           <input type="checkbox" id="filter-extrasale" />
-          <span>🏷️ Extra Promo Active</span>
+          <span>🏷️ Extra Promo</span>
         </label>
-
-        <button type="button" id="btn-seed-deals" class="btn btn-secondary btn-sm" title="Load all 266 hidden & out-of-stock Nikon refurbished SKUs into this table">
-          📥 Load All 266 OOS &amp; Refurb SKUs
-        </button>
       </div>
 
-      <!-- Quick Category Bar & Results Counter -->
+      <!-- Quick Category & Mount Bar + Results Counter -->
       <div class="results-summary-bar">
         <div class="quick-cats" id="quick-category-pills" role="group" aria-label="Quick category filter">
           <button type="button" class="cat-pill active" data-cat="ALL">All Gear</button>
           <button type="button" class="cat-pill" data-cat="Mirrorless Cameras (Z Series)">Mirrorless (Z)</button>
-          <button type="button" class="cat-pill" data-cat="NIKKOR Z Lenses">NIKKOR Z Lenses</button>
+          <button type="button" class="cat-pill" data-cat="NIKKOR Z Lenses & Teleconverters">NIKKOR Z Lenses</button>
           <button type="button" class="cat-pill" data-cat="DSLR Cameras">DSLRs</button>
-          <button type="button" class="cat-pill" data-cat="F-Mount NIKKOR Lenses">F-Mount Lenses</button>
-          <button type="button" class="cat-pill" data-cat="FTZ Adapters & Teleconverters">FTZ &amp; Teleconverters</button>
+          <button type="button" class="cat-pill" data-cat="F-Mount DSLR Lenses (AF-S / AF-P / PC)">F-Mount Lenses</button>
+          <button type="button" class="cat-pill" data-cat="Adapters & Accessories (FTZ)">FTZ &amp; Accessories</button>
+          <button type="button" class="cat-pill" data-cat="Sport Optics (Binoculars, Rangefinders, Fieldscopes)">Sport Optics</button>
         </div>
-        <div style="display:flex; align-items:center; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <span id="deals-results-count">Loading deals...</span>
           <button type="button" id="btn-reset-filters" class="btn btn-secondary btn-sm hidden" title="Reset search and filters to default">
             ↺ Reset Filters
+          </button>
+          <button type="button" id="btn-export-csv" class="btn btn-secondary btn-sm" title="Download current filtered deals table as CSV">
+            📄 Export CSV
+          </button>
+          <button type="button" id="btn-seed-deals" class="btn btn-secondary btn-sm" title="Load all 266 hidden &amp; out-of-stock Nikon refurbished SKUs into this table">
+            📥 Load All 266 SKUs
           </button>
         </div>
       </div>
@@ -173,10 +203,10 @@
         <div class="card">
           <div class="card-header-row">
             <h3>Active Watchlist Rules</h3>
-            <span class="muted" style="font-size: 12px;">Polled directly on every cycle</span>
+            <span class="muted" style="font-size: 12px;">Polled concurrently on every cycle</span>
           </div>
           <p class="muted">
-            Watchlisted items are polled directly on every cycle (even when out of stock and hidden from Nikon's main refurbished page) for instant restock or target price alerts.
+            Watchlisted items are probed directly on every cycle (even when out of stock and hidden from Nikon's main refurbished page) for instant restock, target price, or price-drop alerts.
           </p>
           <div class="table-wrapper">
             <table class="deals-table">
@@ -232,6 +262,10 @@
               <label class="checkbox-label">
                 <input type="checkbox" id="wl-restock" checked />
                 <span>Alert immediately on Restock (0 &rarr; In Stock)</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="wl-price-drop" checked />
+                <span>Alert on ANY price drop for this item</span>
               </label>
               <label class="checkbox-label">
                 <input type="checkbox" id="wl-auto-open" />
@@ -354,7 +388,10 @@
         </div>
 
         <div class="card">
-          <h3>🖥️ Native Desktop Alerts (Windows &amp; macOS)</h3>
+          <div class="card-header-row">
+            <h3>🖥️ Native Desktop Alerts (Windows &amp; macOS)</h3>
+            <button type="button" class="btn btn-secondary btn-sm btn-test-channel" data-channel="desktop">🧪 Test Desktop</button>
+          </div>
           <div class="form-stack">
             <label class="checkbox-label">
               <input type="checkbox" id="set-desktop-enabled" checked />
@@ -362,7 +399,7 @@
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="set-desktop-sound" checked />
-              <span>Play Audible Chime on Alert</span>
+              <span>Play Debounced Audible Chime on Alert (max 1 chime / 15s)</span>
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="set-auto-open-sub50" />
@@ -372,7 +409,10 @@
         </div>
 
         <div class="card">
-          <h3>📱 Mobile Push via ntfy.sh (Recommended for Phone)</h3>
+          <div class="card-header-row">
+            <h3>📱 Mobile Push via ntfy.sh</h3>
+            <button type="button" class="btn btn-secondary btn-sm btn-test-channel" data-channel="ntfy">🧪 Test ntfy</button>
+          </div>
           <p class="muted">Install the free <strong>ntfy</strong> app on iOS/Android and subscribe to your private topic name.</p>
           <div class="form-stack">
             <label class="checkbox-label">
@@ -397,19 +437,25 @@
         <div class="card">
           <h3>💬 Discord / Telegram / Pushover Webhooks</h3>
           <div class="form-stack">
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-discord-enabled" />
-              <span>Enable Discord Rich Webhook Alerts</span>
-            </label>
+            <div class="card-header-row" style="margin-bottom:0;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-discord-enabled" />
+                <span>Enable Discord Rich Webhook Alerts</span>
+              </label>
+              <button type="button" class="btn btn-secondary btn-sm btn-test-channel" data-channel="discord">🧪 Test Discord</button>
+            </div>
             <div>
               <label for="set-discord-url">Discord Webhook URL</label>
               <input type="url" id="set-discord-url" class="input" placeholder="https://discord.com/api/webhooks/..." />
             </div>
             <hr class="divider" />
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-telegram-enabled" />
-              <span>Enable Telegram Bot Alerts</span>
-            </label>
+            <div class="card-header-row" style="margin-bottom:0;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-telegram-enabled" />
+                <span>Enable Telegram Bot Alerts</span>
+              </label>
+              <button type="button" class="btn btn-secondary btn-sm btn-test-channel" data-channel="telegram">🧪 Test Telegram</button>
+            </div>
             <div class="form-row">
               <div>
                 <label for="set-telegram-token">Telegram Bot Token</label>
@@ -421,10 +467,13 @@
               </div>
             </div>
             <hr class="divider" />
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-pushover-enabled" />
-              <span>Enable Pushover Mobile Alerts</span>
-            </label>
+            <div class="card-header-row" style="margin-bottom:0;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-pushover-enabled" />
+                <span>Enable Pushover Mobile Alerts</span>
+              </label>
+              <button type="button" class="btn btn-secondary btn-sm btn-test-channel" data-channel="pushover">🧪 Test Pushover</button>
+            </div>
             <div class="form-row">
               <div>
                 <label for="set-pushover-user">Pushover User Key</label>
@@ -434,6 +483,24 @@
                 <label for="set-pushover-token">Pushover API Token</label>
                 <input type="password" id="set-pushover-token" class="input" />
               </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+          <div class="card-header-row" style="flex-wrap:wrap; gap:10px; margin-bottom:6px;">
+            <div>
+              <h3>📦 Portable Backup &amp; Restore (Settings, Watchlist &amp; Custom MSRPs)</h3>
+              <p class="muted" style="margin-bottom:0;">
+                Export your entire configuration and watchlist rules to a portable <code>.json</code> file when upgrading standalone executables or moving between computers.
+              </p>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <button type="button" id="btn-export-backup" class="btn btn-secondary">📤 Export Backup (.json)</button>
+              <label class="btn btn-secondary" style="margin:0; cursor:pointer;">
+                📥 Import Backup (.json)
+                <input type="file" id="input-import-backup" accept=".json,application/json" style="display:none;" />
+              </label>
             </div>
           </div>
         </div>

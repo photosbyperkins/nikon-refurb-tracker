@@ -105,6 +105,39 @@ def evaluate_variant_alerts(
                     auto_open_browser=watch.auto_open_browser,
                 )
             )
+        elif (
+            watch.notify_on_price_drop
+            and previous is not None
+            and current.refurb_sale_cents < previous.refurb_sale_cents
+        ):
+            watchlist_price_triggered = True
+            drop_dollars = round(
+                (previous.refurb_sale_cents - current.refurb_sale_cents) / 100.0, 2
+            )
+            events.append(
+                AlertEvent(
+                    event_type="WATCHLIST_PRICE_DROP",
+                    sku=current.sku,
+                    name=current.name,
+                    title=(
+                        f"📉 Watchlist Price Drop: {current.name} "
+                        f"(-${drop_dollars:,.2f} -> ${current.effective_price_dollars:,.2f})"
+                    ),
+                    message=(
+                        f"Watchlisted {current.name} [{current.sku}] dropped from "
+                        f"${previous.effective_price_dollars:,.2f} to ${current.effective_price_dollars:,.2f} "
+                        f"(MSRP {msrp_str} • {disc_str}) • {qty_str}."
+                    ),
+                    product_url=current.product_url,
+                    image_url=current.image_url,
+                    effective_price_dollars=current.effective_price_dollars,
+                    msrp_dollars=current.msrp_dollars,
+                    discount_pct_vs_msrp=current.discount_pct_vs_msrp,
+                    available_quantity=current.available_quantity,
+                    previous_price_dollars=prev_dollars,
+                    auto_open_browser=watch.auto_open_browser,
+                )
+            )
 
     # 3. Global Sub-50% of MSRP (or custom global_discount_threshold_pct) Hot Deal check
     threshold = settings.global_discount_threshold_pct
@@ -346,6 +379,35 @@ class AlertDispatcher:
                 logger.warning("Failed to auto-open browser: %s", exc)
 
         alert.channels_sent = channels_sent
+        if self.db is not None:
+            self.db.log_alert(alert)
+        return alert
+
+    async def dispatch_channel(
+        self, alert: AlertEvent, settings: TrackerSettings, channel: str = "all"
+    ) -> AlertEvent:
+        """Dispatch an alert to a single targeted channel (for per-channel testing) or all enabled channels."""
+        ch = channel.strip().lower()
+        if ch in ("", "all"):
+            return await self.dispatch(alert, settings)
+
+        res: str | None = None
+        if ch == "desktop":
+            res = await self._send_desktop(alert, settings)
+        elif ch == "ntfy":
+            if settings.ntfy_topic.strip():
+                res = await self._send_ntfy(alert, settings)
+        elif ch == "discord":
+            if settings.discord_webhook_url.strip():
+                res = await self._send_discord(alert, settings)
+        elif ch == "telegram":
+            if settings.telegram_bot_token.strip() and settings.telegram_chat_id.strip():
+                res = await self._send_telegram(alert, settings)
+        elif ch == "pushover":
+            if settings.pushover_user_key.strip() and settings.pushover_api_token.strip():
+                res = await self._send_pushover(alert, settings)
+
+        alert.channels_sent = [res] if res else []
         if self.db is not None:
             self.db.log_alert(alert)
         return alert

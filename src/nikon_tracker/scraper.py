@@ -93,6 +93,8 @@ class NikonUSAClient:
     ) -> None:
         self.db = db
         self._external_client = client
+        self._shared_client: httpx.AsyncClient | None = None
+        self._shared_loop: asyncio.AbstractEventLoop | None = None
         self.build_id: str | None = None
         self._semaphore = asyncio.Semaphore(max_concurrency)
         # In-memory cache of new product variant MSRPs: {new_sku: (msrp_cents, retail_cents)}
@@ -101,11 +103,35 @@ class NikonUSAClient:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._external_client is not None:
             return self._external_client
-        return httpx.AsyncClient(
-            headers=DEFAULT_HEADERS,
-            timeout=httpx.Timeout(15.0, connect=10.0),
-            follow_redirects=True,
-        )
+        current_loop = asyncio.get_running_loop()
+        if (
+            self._shared_client is None
+            or self._shared_client.is_closed
+            or self._shared_loop is not current_loop
+        ):
+            if self._shared_client is not None and not self._shared_client.is_closed:
+                try:
+                    await self._shared_client.aclose()
+                except Exception:
+                    pass
+            self._shared_client = httpx.AsyncClient(
+                headers=DEFAULT_HEADERS,
+                timeout=httpx.Timeout(15.0, connect=10.0),
+                follow_redirects=True,
+                limits=httpx.Limits(max_keepalive_connections=12, max_connections=20),
+            )
+            self._shared_loop = current_loop
+        return self._shared_client
+
+    async def aclose(self) -> None:
+        """Close the internal persistent HTTP client if open."""
+        if self._shared_client is not None and not self._shared_client.is_closed:
+            try:
+                await self._shared_client.aclose()
+            except Exception:
+                pass
+        self._shared_client = None
+        self._shared_loop = None
 
     async def ensure_build_id(self, client: httpx.AsyncClient, force_refresh: bool = False) -> str:
         """Fetch NikonUSA's current Next.js buildId from HTML if not cached or if invalidated."""
@@ -196,100 +222,93 @@ class NikonUSAClient:
 
     async def fetch_refurbished_catalog(self) -> list[VariantSnapshot]:
         """Fetch all refurbished products & variants from NikonUSA and resolve their true New MSRPs."""
-        own_client = self._external_client is None
         client = await self._get_client()
-        try:
-            all_products: list[dict[str, Any]] = []
-            offset = 0
-            limit = 99
+        all_products: list[dict[str, Any]] = []
+        offset = 0
+        limit = 99
 
-            while True:
-                try:
-                    page_props = await self.fetch_next_json(
-                        client,
-                        "refurbished-cameras.json",
-                        params={"limit": str(limit), "offset": str(offset)},
-                    )
-                except Exception:
-                    # Fallback directly to HTML __NEXT_DATA__ extraction
-                    resp = await client.get(
-                        f"{NIKON_BASE_URL}{REFURB_CATALOG_PATH}",
-                        params={"limit": str(limit), "offset": str(offset)},
-                    )
-                    resp.raise_for_status()
-                    next_data = extract_next_data_from_html(resp.text)
-                    self.build_id = str(next_data.get("buildId") or self.build_id or "")
-                    page_props = next_data.get("props", {}).get("pageProps", {})
+        while True:
+            try:
+                page_props = await self.fetch_next_json(
+                    client,
+                    "refurbished-cameras.json",
+                    params={"limit": str(limit), "offset": str(offset)},
+                )
+            except Exception:
+                # Fallback directly to HTML __NEXT_DATA__ extraction
+                resp = await client.get(
+                    f"{NIKON_BASE_URL}{REFURB_CATALOG_PATH}",
+                    params={"limit": str(limit), "offset": str(offset)},
+                )
+                resp.raise_for_status()
+                next_data = extract_next_data_from_html(resp.text)
+                self.build_id = str(next_data.get("buildId") or self.build_id or "")
+                page_props = next_data.get("props", {}).get("pageProps", {})
 
-                refurb_ds = self._find_refurb_datasource(page_props)
-                items = refurb_ds.get("items", []) if refurb_ds else []
-                total = refurb_ds.get("total", len(items)) if refurb_ds else len(items)
+            refurb_ds = self._find_refurb_datasource(page_props)
+            items = refurb_ds.get("items", []) if refurb_ds else []
+            total = refurb_ds.get("total", len(items)) if refurb_ds else len(items)
 
-                all_products.extend(items)
-                offset += len(items)
-                if not items or offset >= total:
-                    break
+            all_products.extend(items)
+            offset += len(items)
+            if not items or offset >= total:
+                break
 
-            snapshots: list[VariantSnapshot] = []
-            seen_skus: set[str] = set()
-            for prod in all_products:
-                for snap in self._parse_product_variants(prod):
-                    if snap.sku not in seen_skus:
-                        seen_skus.add(snap.sku)
-                        snapshots.append(snap)
+        snapshots: list[VariantSnapshot] = []
+        seen_skus: set[str] = set()
+        for prod in all_products:
+            for snap in self._parse_product_variants(prod):
+                if snap.sku not in seen_skus:
+                    seen_skus.add(snap.sku)
+                    snapshots.append(snap)
 
-            # Resolve true brand-new MSRPs for all snapshots
-            await self._resolve_msrps_batch(client, snapshots)
-            return snapshots
-        finally:
-            if own_client:
-                await client.aclose()
+        # Resolve true brand-new MSRPs for all snapshots
+        await self._resolve_msrps_batch(client, snapshots)
+        return snapshots
 
     async def fetch_watchlist_items(
         self, watchlist: list[WatchlistEntry], catalog_skus: set[str]
     ) -> list[VariantSnapshot]:
-        """Fetch individual product pages for watchlisted items not already returned in the in-stock catalog."""
+        """Fetch individual product pages concurrently for watchlisted items not already in the in-stock catalog."""
         missing_entries = [
             w for w in watchlist if w.enabled and w.sku.upper() not in catalog_skus
         ]
         if not missing_entries:
             return []
 
-        own_client = self._external_client is None
         client = await self._get_client()
-        try:
-            # Group by (slug, product_key) to avoid duplicate product page fetches
-            by_page: dict[tuple[str, str], list[WatchlistEntry]] = {}
-            for w in missing_entries:
-                by_page.setdefault((w.slug, w.product_key), []).append(w)
+        # Group by (slug, product_key) to avoid duplicate product page fetches
+        by_page: dict[tuple[str, str], list[WatchlistEntry]] = {}
+        for w in missing_entries:
+            by_page.setdefault((w.slug, w.product_key), []).append(w)
 
-            snapshots: list[VariantSnapshot] = []
-            for (slug, product_key), entries in by_page.items():
-                prod_snaps = await self._fetch_single_product_page(client, slug, product_key)
-                if prod_snaps:
-                    snapshots.extend(prod_snaps)
+        page_results = await asyncio.gather(
+            *(
+                self._fetch_single_product_page(client, slug, product_key)
+                for (slug, product_key) in by_page
+            )
+        )
+        snapshots: list[VariantSnapshot] = []
+        seen_skus: set[str] = set()
+        for prod_snaps in page_results:
+            for snap in prod_snaps:
+                if snap.sku not in seen_skus:
+                    seen_skus.add(snap.sku)
+                    snapshots.append(snap)
 
-            if snapshots:
-                await self._resolve_msrps_batch(client, snapshots)
-            return snapshots
-        finally:
-            if own_client:
-                await client.aclose()
+        if snapshots:
+            await self._resolve_msrps_batch(client, snapshots)
+        return snapshots
 
     async def fetch_product_by_url_or_slug(
         self, slug: str, product_key: str
     ) -> list[VariantSnapshot]:
         """Public helper to fetch and resolve all variants for a single product page."""
-        own_client = self._external_client is None
         client = await self._get_client()
-        try:
-            snaps = await self._fetch_single_product_page(client, slug, product_key)
-            if snaps:
-                await self._resolve_msrps_batch(client, snaps)
-            return snaps
-        finally:
-            if own_client:
-                await client.aclose()
+        snaps = await self._fetch_single_product_page(client, slug, product_key)
+        if snaps:
+            await self._resolve_msrps_batch(client, snaps)
+        return snaps
 
     async def _fetch_single_product_page(
         self, client: httpx.AsyncClient, slug: str, product_key: str
@@ -511,6 +530,15 @@ class NikonUSAClient:
                 or ""
             )
 
+            avail = var.get("availability") if isinstance(var.get("availability"), dict) else {}
+            is_on_stock = bool(var.get("isOnStock") if "isOnStock" in var else avail.get("isOnStock"))
+            available_qty = int(
+                (var.get("availableQuantity") if "availableQuantity" in var else avail.get("availableQuantity")) or 0
+            )
+            cart_status = str(
+                var.get("addToCartStatus") or avail.get("addToCartStatus") or ("AVAILABLE" if is_on_stock else "OUT_OF_STOCK")
+            )
+
             snap = VariantSnapshot(
                 sku=sku,
                 new_sku=strip_refurb_sku(sku),
@@ -530,9 +558,9 @@ class NikonUSAClient:
                 true_msrp_cents=base_cents if has_refurb_base else None,
                 msrp_source="refurb_base" if has_refurb_base else "unknown",
                 promo_message=promo_message,
-                is_on_stock=bool(var.get("isOnStock")),
-                available_quantity=int(var.get("availableQuantity") or 0),
-                add_to_cart_status=str(var.get("addToCartStatus") or "OUT_OF_STOCK"),
+                is_on_stock=is_on_stock,
+                available_quantity=available_qty,
+                add_to_cart_status=cart_status,
             )
             results.append(snap)
 

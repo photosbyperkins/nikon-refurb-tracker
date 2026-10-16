@@ -170,6 +170,26 @@ class VariantSnapshot(BaseModel):
         """True when an additional refurbished flash sale discount is active below regular refurb price."""
         return self.refurb_sale_cents < self.refurb_reg_cents
 
+    @computed_field
+    @property
+    def is_all_time_low(self) -> bool:
+        """True when current price is at the all-time lowest recorded price and represents a markdown."""
+        if not self.lowest_seen_cents or self.lowest_seen_cents <= 0:
+            return False
+        if self.refurb_sale_cents > self.lowest_seen_cents:
+            return False
+        has_historical_drop = (
+            self.highest_seen_cents is not None
+            and self.highest_seen_cents > self.lowest_seen_cents
+        )
+        return bool(has_historical_drop or self.is_extra_refurb_sale or self.is_sub_50_msrp)
+
+    @computed_field
+    @property
+    def mount_system(self) -> str:
+        """Mount & sensor system classification (Z-Mount FX, Z-Mount DX, F-Mount, Optics & Accessories)."""
+        return classify_nikon_mount(self.product_type_key, self.slug, self.name)
+
 
 class WatchlistEntry(BaseModel):
     """User-configured product/SKU watchlist item with custom alert rules."""
@@ -188,6 +208,10 @@ class WatchlistEntry(BaseModel):
     notify_on_restock: bool = Field(
         default=True, description="Alert immediately when stock transitions from 0 to >0"
     )
+    notify_on_price_drop: bool = Field(
+        default=True,
+        description="Alert whenever in-stock price drops below its previous recorded price",
+    )
     auto_open_browser: bool = Field(
         default=False, description="Automatically open NikonUSA product page in browser on hit"
     )
@@ -201,7 +225,14 @@ class AlertEvent(BaseModel):
     """Triggered alert event ready for multi-channel dispatch and logging."""
 
     id: int | None = None
-    event_type: Literal["SUB_50_MSRP", "FLASH_SALE_DROP", "WATCHLIST_PRICE", "WATCHLIST_RESTOCK", "TEST_ALERT"]
+    event_type: Literal[
+        "SUB_50_MSRP",
+        "FLASH_SALE_DROP",
+        "WATCHLIST_PRICE",
+        "WATCHLIST_PRICE_DROP",
+        "WATCHLIST_RESTOCK",
+        "TEST_ALERT",
+    ]
     sku: str
     name: str
     title: str
@@ -389,6 +420,46 @@ def classify_nikon_category(product_type_key: str, slug: str) -> str:
     ):
         return "Sport Optics (Binoculars, Rangefinders, Fieldscopes)"
     return "Refurbished Gear"
+
+
+def classify_nikon_mount(product_type_key: str, slug: str, name: str = "") -> str:
+    """Classify a Nikon refurbished product into Z-Mount FX, Z-Mount DX, F-Mount, or Optics & Accessories."""
+    p_type = (product_type_key or "").strip().lower()
+    s = (slug or "").strip().lower()
+    n = (name or "").strip().lower()
+
+    # Z-Mount DX bodies & lenses
+    is_z_dx_body = any(
+        token in s or token in n
+        for token in ("z-50", "z50", "z-30", "z30", "z-fc", "zfc")
+    )
+    is_z_dx_lens = ("nikkor-z-dx" in s) or ("nikkor z dx" in n)
+    if is_z_dx_body or is_z_dx_lens:
+        return "Z-Mount DX"
+
+    # Z-Mount FX bodies, cinema, lenses, teleconverters, FTZ adapters
+    if (
+        p_type in ("pt-mirrorless-cameras", "pt-cinemacam", "pt-cinema-cameras")
+        or "nikkor-z" in s
+        or "nikkor z" in n
+        or "z-teleconverter" in s
+        or "ftz" in s
+        or s.startswith(("z-5", "z5", "z-6", "z6", "z-7", "z7", "z-8", "z8", "z-9", "z9", "z-f", "zf", "zr"))
+    ):
+        return "Z-Mount FX"
+
+    # F-Mount DSLRs & F-Mount NIKKOR lenses
+    if (
+        p_type in ("pt-slr-cameras", "pt-dslr-cameras")
+        or s.startswith(("af-s-", "af-p-", "pc-", "af-nikkor", "af-d", "d3", "d5", "d6", "d7", "d8", "d500"))
+        or "af-s " in n
+        or "af-p " in n
+        or "f-mount" in n
+    ):
+        return "F-Mount"
+
+    return "Optics & Accessories"
+
 
 
 _CACHED_CATALOG: list[dict[str, Any]] | None = None
