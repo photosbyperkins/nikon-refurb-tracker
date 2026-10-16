@@ -7,6 +7,7 @@ import html
 import logging
 import subprocess
 import sys
+import time
 import webbrowser
 
 import httpx
@@ -189,9 +190,109 @@ def evaluate_variant_alerts(
 class AlertDispatcher:
     """Dispatches AlertEvents across Desktop, ntfy.sh, Discord, Telegram, and Pushover."""
 
-    def __init__(self, db: TrackerDatabase | None = None) -> None:
+    def __init__(
+        self,
+        db: TrackerDatabase | None = None,
+        sound_debounce_seconds: float = 15.0,
+    ) -> None:
         self.db = db
         self.mute_desktop: bool = False
+        self.sound_debounce_seconds: float = sound_debounce_seconds
+        self._last_sound_at: float = 0.0
+
+    def _should_play_sound(self, settings: TrackerSettings) -> bool:
+        """Return True if desktop sound is enabled and hasn't played within sound_debounce_seconds."""
+        if not settings.desktop_sound_enabled or self.mute_desktop:
+            return False
+        now = time.monotonic()
+        if self._last_sound_at > 0.0 and (now - self._last_sound_at) < self.sound_debounce_seconds:
+            return False
+        self._last_sound_at = now
+        return True
+
+    async def dispatch_batch(
+        self, alerts: list[AlertEvent], settings: TrackerSettings
+    ) -> list[AlertEvent]:
+        """Dispatch a batch of alerts from a single poll cycle without spamming desktop popups or chimes."""
+        if not alerts:
+            return []
+
+        if len(alerts) <= 2:
+            dispatched: list[AlertEvent] = []
+            for ev in alerts:
+                dispatched.append(await self.dispatch(ev, settings))
+            return dispatched
+
+        # More than 2 alerts in a single poll cycle (e.g., initial launch or sitewide flash sale):
+        # Send ONE consolidated desktop notification + ONE debounced chime, while logging all alerts.
+        desktop_ok = False
+        if settings.desktop_notifications_enabled and not self.mute_desktop:
+            top = alerts[0]
+            summary_alert = AlertEvent(
+                event_type=top.event_type,
+                sku=top.sku,
+                name=top.name,
+                title=f"🔥 {len(alerts)} Nikon Refurbished Deals Found!",
+                message=(
+                    f"Top deal: {top.name} (${top.effective_price_dollars:,.2f}) "
+                    f"+ {len(alerts) - 1} more deals. Open dashboard to view all."
+                ),
+                product_url=top.product_url,
+                effective_price_dollars=top.effective_price_dollars,
+                msrp_dollars=top.msrp_dollars,
+                discount_pct_vs_msrp=top.discount_pct_vs_msrp,
+                available_quantity=top.available_quantity,
+            )
+            res = await self._send_desktop(summary_alert, settings)
+            desktop_ok = res == "desktop"
+
+        browser_opened = False
+        dispatched_batch: list[AlertEvent] = []
+        for ev in alerts:
+            # Dispatch remote webhooks (if enabled) without re-triggering desktop toast per item
+            channels_sent: list[str] = []
+            if desktop_ok:
+                channels_sent.append("desktop")
+
+            tasks: list[asyncio.Task[str | None]] = []
+            if settings.ntfy_enabled and settings.ntfy_topic.strip():
+                tasks.append(asyncio.create_task(self._send_ntfy(ev, settings)))
+            if settings.discord_enabled and settings.discord_webhook_url.strip():
+                tasks.append(asyncio.create_task(self._send_discord(ev, settings)))
+            if (
+                settings.telegram_enabled
+                and settings.telegram_bot_token.strip()
+                and settings.telegram_chat_id.strip()
+            ):
+                tasks.append(asyncio.create_task(self._send_telegram(ev, settings)))
+            if (
+                settings.pushover_enabled
+                and settings.pushover_user_key.strip()
+                and settings.pushover_api_token.strip()
+            ):
+                tasks.append(asyncio.create_task(self._send_pushover(ev, settings)))
+
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, str) and r:
+                        channels_sent.append(r)
+
+            # Cap auto-opening browser tabs to at most 1 tab per poll batch
+            if ev.auto_open_browser and ev.product_url and not browser_opened:
+                try:
+                    webbrowser.open(ev.product_url)
+                    channels_sent.append("browser_open")
+                    browser_opened = True
+                except Exception as exc:
+                    logger.warning("Failed to auto-open browser: %s", exc)
+
+            ev.channels_sent = channels_sent
+            if self.db is not None:
+                self.db.log_alert(ev)
+            dispatched_batch.append(ev)
+
+        return dispatched_batch
 
     async def dispatch(self, alert: AlertEvent, settings: TrackerSettings) -> AlertEvent:
         """Send an alert across all enabled channels and record it in the database."""
@@ -252,13 +353,14 @@ class AlertDispatcher:
     async def _send_desktop(
         self, alert: AlertEvent, settings: TrackerSettings
     ) -> str | None:
-        """Trigger native OS notification and sound on Windows or macOS."""
+        """Trigger native OS notification and debounced sound on Windows or macOS."""
+        play_sound = self._should_play_sound(settings)
         try:
             await asyncio.to_thread(
                 self._send_desktop_sync,
                 alert.title,
                 alert.message,
-                settings.desktop_sound_enabled,
+                play_sound,
             )
             return "desktop"
         except Exception as exc:

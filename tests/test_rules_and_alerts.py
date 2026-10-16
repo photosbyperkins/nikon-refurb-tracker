@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from nikon_tracker.database import TrackerDatabase
-from nikon_tracker.models import TrackerSettings, VariantSnapshot, WatchlistEntry
-from nikon_tracker.notifier import evaluate_variant_alerts
+from nikon_tracker.models import AlertEvent, TrackerSettings, VariantSnapshot, WatchlistEntry
+from nikon_tracker.notifier import AlertDispatcher, evaluate_variant_alerts
 
 
 def _make_snapshot(
@@ -167,4 +167,53 @@ def test_unknown_msrp_not_cached_and_no_triple_alert(tmp_path: Path) -> None:
         db=db,
     )
     assert [e.event_type for e in events] == ["WATCHLIST_PRICE"]
+
+
+def test_audible_debounce_and_batch_dispatch(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    db = TrackerDatabase(tmp_path / "batch_alerts.db")
+    dispatcher = AlertDispatcher(db=db, sound_debounce_seconds=15.0)
+    settings = TrackerSettings(desktop_notifications_enabled=True, desktop_sound_enabled=True)
+
+    # First call to _should_play_sound should return True; immediate subsequent calls False
+    assert dispatcher._should_play_sound(settings) is True
+    assert dispatcher._should_play_sound(settings) is False
+
+    # Reset sound timer and verify dispatch_batch with 5 alerts sends only 1 desktop toast + 1 sound
+    dispatcher._last_sound_at = 0.0
+    desktop_calls: list[tuple[str, str, bool]] = []
+
+    def fake_desktop_sync(title: str, message: str, play_sound: bool) -> None:
+        desktop_calls.append((title, message, play_sound))
+
+    monkeypatch.setattr(dispatcher, "_send_desktop_sync", fake_desktop_sync)
+
+    batch = [
+        AlertEvent(
+            event_type="SUB_50_MSRP",
+            sku=f"SKU{i}",
+            name=f"NIKKOR Z Lens {i}",
+            title=f"🔥 55% OFF: NIKKOR Z Lens {i}",
+            message="Deal message",
+            product_url=f"https://www.nikonusa.com/p/lens-{i}/SKU{i}/overview",
+            effective_price_dollars=450.0,
+            msrp_dollars=1000.0,
+            discount_pct_vs_msrp=55.0,
+            available_quantity=3,
+        )
+        for i in range(5)
+    ]
+
+    dispatched = asyncio.run(dispatcher.dispatch_batch(batch, settings))
+    assert len(dispatched) == 5
+    # Only ONE consolidated desktop popup and ONE chime should have been triggered
+    assert len(desktop_calls) == 1
+    assert "5 Nikon Refurbished Deals Found!" in desktop_calls[0][0]
+    assert desktop_calls[0][2] is True
+
+    # All 5 alerts should still be recorded in SQLite alerts_log
+    logged = db.get_recent_alerts(limit=10)
+    assert len(logged) == 5
+
 

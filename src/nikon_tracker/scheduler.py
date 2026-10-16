@@ -98,6 +98,7 @@ class TrackerScheduler:
                 seen_skus = {s.sku for s in all_snaps}
 
                 # 3. Upsert into SQLite and evaluate alert rules
+                pending_alerts: list[AlertEvent] = []
                 for snap in all_snaps:
                     prev, curr = self.db.upsert_variant(snap)
                     updated_snapshots.append(curr)
@@ -111,8 +112,12 @@ class TrackerScheduler:
                     for idx, ev in enumerate(events):
                         if idx > 0:
                             ev.auto_open_browser = False
-                        sent_ev = await self.dispatcher.dispatch(ev, settings)
-                        triggered_alerts.append(sent_ev)
+                        pending_alerts.append(ev)
+
+                if pending_alerts:
+                    triggered_alerts = await self.dispatcher.dispatch_batch(
+                        pending_alerts, settings
+                    )
 
                 # 4. Mark disappeared items as out of stock
                 self.db.mark_missing_catalog_items_out_of_stock(seen_skus)

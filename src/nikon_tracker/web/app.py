@@ -66,7 +66,7 @@ def create_app(
 
     app = FastAPI(
         title="NikonUSA Refurbished Tracker",
-        version="0.1.0",
+        version="0.1.1",
         description="Fast alert tracker for NikonUSA refurbished cameras & lenses (<50% MSRP deals & restocks).",
         lifespan=lifespan,
     )
